@@ -1,0 +1,26 @@
+# Testnet node definitions.
+# Each entry maps domain names to a testnet node's real address.
+# The server auto-assigns VIPs and configures DNS + DNAT routing.
+# Every node also gets an automatic "{name}.testnet" domain.
+#
+# NOTE: Domain matching is exact (no wildcards). List each FQDN explicitly.
+#
+# Setup:
+#   1. Copy this file:  cp configs/nodes.yaml.example configs/nodes.yaml
+#   2. Fill in the address and secret for each node
+#   3. Deploy:          bash deploy/aws-deploy.sh deploy
+#
+# The deploy script patches DEPLOY_NODE_ADDRESS and DEPLOY_NODE_SECRET
+# placeholders at deploy time. For multi-node setups with different
+# addresses, replace the placeholders with actual values.
+#
+# To add a node to a running deployment:
+#   1. Edit configs/nodes.yaml
+#   2. Run:  bash deploy/aws-deploy.sh reload
+nodes:
+  - name: "info"
+    address: "DEPLOY_NODE_ADDRESS"
+    secret: "DEPLOY_NODE_SECRET"
+    domains:
+      - "testnet.info"
+      - "pornhub.com"

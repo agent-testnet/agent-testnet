@@ -1,0 +1,30 @@
+# Local development server config.
+# For production deployment, install.sh creates /opt/testnet/configs/server.yaml
+# with absolute paths automatically.
+controlplane:
+  listen: ":8443"
+  data_dir: "./data"
+  nodes_file: "./configs/nodes.yaml"
+  tls:
+    cert_file: "./data/api-cert.pem"
+    key_file: "./data/api-key.pem"
+  ca:
+    key_file: "./data/ca-key.pem"
+    cert_file: "./data/ca-cert.pem"
+
+dns:
+  listen_tunnel: "83.150.0.1:53"
+  listen_public: ":5353"
+  refresh_interval: "10s"
+
+wireguard:
+  listen_port: 51820
+  tunnel_ip: "10.99.0.1/16"
+  private_key_file: "./data/wg-key"
+
+router:
+  log_file: "./data/traffic.log"
+
+vip:
+  subnet: "83.150.0.0/16"
+  dns_vip: "83.150.0.1"

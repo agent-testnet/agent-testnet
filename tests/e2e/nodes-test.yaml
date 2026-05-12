@@ -1,0 +1,10 @@
+# Test-only nodes configuration for E2E testing.
+# Uses DEPLOY_NODE_ADDRESS and DEPLOY_NODE_SECRET placeholders
+# which the deploy script patches at deploy time.
+# Keep this minimal (single node) for faster test cycles.
+nodes:
+  - name: "e2e-node"
+    address: "DEPLOY_NODE_ADDRESS"
+    secret: "DEPLOY_NODE_SECRET"
+    domains:
+      - "testnet.info"

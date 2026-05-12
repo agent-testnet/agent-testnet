@@ -1,0 +1,17 @@
+# Example client config (for reference).
+# In production, testnet-client setup generates ~/.testnet/config.yaml automatically.
+server:
+  url: "https://SERVER_IP:8443"
+
+daemon:
+  socket: "/var/run/testnet-client.sock"
+  data_dir: "~/.testnet/data"
+  wg_config: "~/.testnet/wg.conf"
+
+sandbox:
+  firecracker_bin: "~/.testnet/bin/firecracker"
+  kernel_path: "~/.testnet/bin/vmlinux-5.10.bin"
+  default_rootfs: "~/.testnet/bin/rootfs.ext4"
+  default_vcpu: 2
+  default_mem_mb: 4096
+  vm_subnet: "172.16.0.0/16"
