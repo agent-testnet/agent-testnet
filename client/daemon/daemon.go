@@ -212,50 +212,45 @@ func (d *Daemon) handleStatus(conn net.Conn) {
 	writeResponse(conn, true, "", status)
 }
 
+// setupWireGuard verifies the testnet tunnel interface is up. It does NOT
+// manage the tunnel lifecycle — that responsibility lives in
+// `testnet-client setup`, which writes /etc/wireguard/wg-testnet.conf and
+// runs `wg-quick up wg-testnet`. The daemon merely ensures the interface
+// exists; if it's gone (e.g. user manually `wg-quick down`-ed it, or never
+// ran setup) we attempt one restore from the on-disk config, otherwise we
+// fail with a clear message instead of fighting an in-place tunnel.
+//
+// Historically the daemon wrote its own ~/.testnet/wg.conf and brought up a
+// SEPARATE interface called `wg` (basename of the config path) on every
+// start. That interface was never used by anything (agent VMs route through
+// wg-testnet — see d.LaunchAgent), and its routes (83.150.0.0/16,
+// 10.99.0.0/16) collided with wg-testnet's, so the daemon's wg-quick up
+// failed on every restart with "RTNETLINK answers: File exists". Removing
+// that dead path is the actual fix; the verify-or-restore behavior here is
+// just defensive.
 func (d *Daemon) setupWireGuard() error {
-	state, err := d.loadStateFile()
-	if err != nil {
-		return err
+	if interfaceExists(WGInterfaceName) {
+		log.Printf("[daemon] WireGuard tunnel %s already up", WGInterfaceName)
+		return nil
 	}
 
-	wgConfPath := expandPath(d.cfg.Daemon.WGConfig)
-	if err := os.MkdirAll(filepath.Dir(wgConfPath), 0o700); err != nil {
-		return err
+	if _, err := os.Stat(WGSystemConfigPath); err != nil {
+		return fmt.Errorf("WireGuard interface %s is down and %s is missing — run `testnet-client setup` first", WGInterfaceName, WGSystemConfigPath)
 	}
 
-	// Parse the tunnel CIDR to get the client's host IP (.1 in the /24)
-	_, ipNet, err := net.ParseCIDR(state.TunnelCIDR)
-	if err != nil {
-		return fmt.Errorf("parse tunnel CIDR: %w", err)
+	log.Printf("[daemon] WireGuard tunnel %s is down — restoring from %s", WGInterfaceName, WGSystemConfigPath)
+	if out, err := exec.Command("wg-quick", "up", WGInterfaceName).CombinedOutput(); err != nil {
+		return fmt.Errorf("wg-quick up %s: %s: %w", WGInterfaceName, strings.TrimSpace(string(out)), err)
 	}
-	clientIP := make(net.IP, len(ipNet.IP))
-	copy(clientIP, ipNet.IP)
-	clientIP[3] = 1 // .1 is the client host
-
-	// Write WireGuard config
-	wgConf := fmt.Sprintf(`[Interface]
-PrivateKey = %s
-Address = %s/24
-
-[Peer]
-PublicKey = %s
-Endpoint = %s
-AllowedIPs = 10.99.0.0/16, 83.150.0.0/16
-PersistentKeepalive = 25
-`, state.WGPrivKey, clientIP.String(), state.ServerWGKey, d.serverEndpoint())
-
-	if err := os.WriteFile(wgConfPath, []byte(wgConf), 0o600); err != nil {
-		return err
-	}
-
-	// Bring up WireGuard using wg-quick
-	cmd := exec.Command("wg-quick", "up", wgConfPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("wg-quick up: %s: %w", string(out), err)
-	}
-
-	log.Printf("[daemon] WireGuard tunnel up (client IP: %s)", clientIP)
+	log.Printf("[daemon] WireGuard tunnel %s restored", WGInterfaceName)
 	return nil
+}
+
+// interfaceExists returns true if a kernel netlink interface with the given
+// name exists. Uses `ip link show <name>` because that's what we can rely on
+// across Alpine, Debian, Ubuntu without pulling in a netlink dependency.
+func interfaceExists(name string) bool {
+	return exec.Command("ip", "link", "show", "dev", name).Run() == nil
 }
 
 func (d *Daemon) serverEndpoint() string {

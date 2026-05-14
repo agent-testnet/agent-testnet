@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/agent-testnet/agent-testnet/pkg/sslenv"
 )
 
 // VMConfig specifies how to create a Firecracker VM.
@@ -207,9 +209,55 @@ func (v *VM) prepareRootFS() (string, error) {
 			log.Printf("[vm %s] warning: update-ca-certificates: %s: %v", v.cfg.ID, string(out), err)
 		}
 		log.Printf("[vm %s] injected CA certificate", v.cfg.ID)
+
+		if err := writeSSLEnv(mountDir); err != nil {
+			return "", fmt.Errorf("write SSL env files: %w", err)
+		}
+		log.Printf("[vm %s] injected SSL env vars", v.cfg.ID)
 	}
 
 	return vmRootFS, nil
+}
+
+// writeSSLEnv writes the testnet SSL/TLS environment variables into the VM
+// rootfs so every common runtime (Node.js, Python requests, AWS SDKs, ...)
+// trusts the testnet CA out-of-the-box. See pkg/sslenv for the rationale.
+//
+// We write to TWO locations because login shells and PAM read different
+// files:
+//
+//   - /etc/profile.d/testnet-ssl.sh — sourced by bash/ash for any login
+//     shell, including non-interactive SSH commands like the ones
+//     start_openclaw_gateway uses (it explicitly `source`s a profile.d
+//     script).
+//   - /etc/environment — read by pam_env at SSH login and inherited by
+//     everything those sessions spawn. We APPEND rather than overwrite in
+//     case the base rootfs ever ships defaults; duplicate keys in
+//     /etc/environment are tolerated (last one wins, and our values match).
+func writeSSLEnv(mountDir string) error {
+	profileDir := filepath.Join(mountDir, "etc", "profile.d")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		return fmt.Errorf("create profile.d: %w", err)
+	}
+	profilePath := filepath.Join(profileDir, "testnet-ssl.sh")
+	profileBody := "# Testnet SSL/TLS env vars — injected by client/sandbox/firecracker.go.\n" +
+		"# Makes Node.js, Python requests, AWS SDKs, etc. trust the testnet CA\n" +
+		"# without per-tool configuration. See pkg/sslenv for details.\n" +
+		sslenv.Shell()
+	if err := os.WriteFile(profilePath, []byte(profileBody), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", profilePath, err)
+	}
+
+	envPath := filepath.Join(mountDir, "etc", "environment")
+	f, err := os.OpenFile(envPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", envPath, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("# Testnet SSL/TLS env vars (see /etc/profile.d/testnet-ssl.sh).\n" + sslenv.EnvironmentFile()); err != nil {
+		return fmt.Errorf("write %s: %w", envPath, err)
+	}
+	return nil
 }
 
 // generateMAC returns a random locally-administered unicast MAC address.

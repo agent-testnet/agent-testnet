@@ -10,6 +10,8 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"github.com/agent-testnet/agent-testnet/pkg/sslenv"
 )
 
 // Config holds parameters for creating a testnet-confined sandbox.
@@ -127,19 +129,20 @@ func Run(cfg *Config) error {
 	}
 
 	// 9. Install the testnet CA cert inside the namespace (if the cert file exists)
+	caInstalled := false
 	if cfg.CACertPath != "" {
 		if _, err := os.Stat(cfg.CACertPath); err == nil {
 			destDir := fmt.Sprintf("/etc/netns/%s", nsName)
 			// Copy the CA cert so it's available inside the namespace. Applications
 			// can reference it explicitly, or it can be injected into the system
 			// trust store via update-ca-certificates when the namespace has one.
-		destPath := destDir + "/ca.pem"
-		if data, err := os.ReadFile(cfg.CACertPath); err == nil {
-			if err := os.WriteFile(destPath, data, 0o644); err != nil {
-				cleanup()
-				return fmt.Errorf("write CA cert to namespace: %w", err)
+			destPath := destDir + "/ca.pem"
+			if data, err := os.ReadFile(cfg.CACertPath); err == nil {
+				if err := os.WriteFile(destPath, data, 0o644); err != nil {
+					cleanup()
+					return fmt.Errorf("write CA cert to namespace: %w", err)
+				}
 			}
-		}
 
 			// Try to install into the system trust store inside the namespace.
 			// This is best-effort: some base systems don't have update-ca-certificates.
@@ -147,6 +150,7 @@ func Run(cfg *Config) error {
 			runCmd("ip", "netns", "exec", nsName, "mkdir", "-p", sysCADir)
 			runCmd("ip", "netns", "exec", nsName, "cp", cfg.CACertPath, sysCADir+"/testnet-ca.crt")
 			runCmd("ip", "netns", "exec", nsName, "update-ca-certificates")
+			caInstalled = true
 		} else {
 			log.Printf("[sandbox] warning: CA cert %s not found, skipping trust store setup", cfg.CACertPath)
 		}
@@ -159,6 +163,20 @@ func Run(cfg *Config) error {
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
+
+	// Inject the SSL/TLS env vars so Node.js, Python requests, AWS SDKs, etc.
+	// trust the testnet CA without per-tool configuration. We only set them
+	// when the CA was actually installed into the system trust store, since
+	// the env vars point at /etc/ssl/certs/ca-certificates.crt and the raw
+	// testnet PEM — both of which only contain the testnet CA once
+	// update-ca-certificates has run above. See pkg/sslenv for details.
+	//
+	// Unlike the Firecracker sandbox we set env on the child process only —
+	// the namespace shares the host's filesystem, so writing to
+	// /etc/profile.d or /etc/environment would leak onto the host.
+	if caInstalled {
+		child.Env = append(os.Environ(), sslenv.EnvSlice()...)
+	}
 
 	err = child.Run()
 

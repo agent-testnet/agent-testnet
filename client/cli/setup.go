@@ -15,7 +15,10 @@ import (
 	"github.com/agent-testnet/agent-testnet/server/wg"
 )
 
-const wgInterfaceName = "wg-testnet"
+// wgInterfaceName is an alias for the shared daemon.WGInterfaceName constant
+// to keep the call sites in this file readable. Do not introduce a separate
+// literal — the daemon and setup must agree on the tunnel name.
+const wgInterfaceName = daemon.WGInterfaceName
 
 func newSetupCmd() *cobra.Command {
 	var (

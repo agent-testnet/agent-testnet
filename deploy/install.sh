@@ -323,6 +323,12 @@ install_client() {
 
     download_binary "testnet-client"
 
+    # Note: Environment=HOME=/root is required. Without it, systemd starts the
+    # daemon with an empty $HOME and os.UserHomeDir() in client/cli/root.go
+    # returns "" — the config load then fails (path becomes "/.testnet/...")
+    # and SetClientDefaults falls back to an empty Daemon.DataDir, which
+    # surfaces as the cryptic "Error: mkdir : no such file or directory" on
+    # startup. WorkingDirectory=/root alone does NOT set $HOME.
     install_systemd_unit "testnet-client" "$(cat <<'UNIT'
 [Unit]
 Description=Testnet Client Daemon
@@ -331,6 +337,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=HOME=/root
 ExecStartPre=/bin/sh -c 'test -e /dev/kvm || echo "WARNING: /dev/kvm not found"'
 ExecStartPre=/bin/sh -c 'command -v wg >/dev/null && command -v iptables >/dev/null'
 ExecStart=/usr/local/bin/testnet-client daemon start

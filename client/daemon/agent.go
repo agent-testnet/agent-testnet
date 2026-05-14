@@ -79,7 +79,7 @@ func (d *Daemon) LaunchAgent(cfg api.AgentConfig) (*AgentInstance, error) {
 	}
 
 	serverTunnelIP := "10.99.0.1"
-	wgInterface := "wg-testnet"
+	wgInterface := WGInterfaceName
 
 	// Generate ephemeral SSH keypair for this VM
 	agentDir := filepath.Join(d.dataDir, "agents", agentID)

@@ -215,6 +215,36 @@ OCEOF
     vm_ssh "chmod 600 ~/.openclaw/openclaw.json"
 }
 
+# Write OpenClaw's environment in the VM: both the gateway's .env (auto-loaded
+# by `openclaw gateway`) and /etc/profile.d/openclaw.sh (sourced for `openclaw
+# tui` and any other interactive use). Keeps install + reconfig in sync.
+#
+# Note: SSL trust env vars (NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, ...) are
+# NOT set here. They are injected globally into every agent VM by
+# client/sandbox/firecracker.go (alongside the testnet CA cert itself), via
+# /etc/profile.d/testnet-ssl.sh and /etc/environment — so any HTTPS client
+# inside the VM trusts testnet certs out-of-the-box without per-tool config.
+# See pkg/sslenv for the rationale.
+#
+# Args: $1 = api key env var name (e.g. ANTHROPIC_API_KEY), $2 = api key value
+write_openclaw_env() {
+    local api_key_env="$1" api_key="$2"
+
+    vm_ssh "cat > ~/.openclaw/.env" <<ENV
+${api_key_env}=${api_key}
+PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+CHROME_PATH=/usr/bin/chromium-browser
+ENV
+    vm_ssh "chmod 600 ~/.openclaw/.env"
+
+    vm_ssh "cat > /etc/profile.d/openclaw.sh" <<ENV
+export ${api_key_env}="${api_key}"
+export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+export CHROME_PATH=/usr/bin/chromium-browser
+ENV
+    vm_ssh "chmod 600 /etc/profile.d/openclaw.sh"
+}
+
 # Work around an OpenClaw 2026.4.x bug where the per-agent models.json is
 # generated with "https://openrouter.ai/v1" as the OpenRouter baseUrl instead
 # of the correct "https://openrouter.ai/api/v1". The wrong URL returns the
@@ -589,22 +619,7 @@ CRCONF
 
     # OpenClaw strictly validates config — unknown keys prevent gateway from starting.
     write_openclaw_config "$model_ref" "$gw_token"
-
-    # Persist the API key via OpenClaw's .env mechanism (auto-loaded by the gateway)
-    vm_ssh "cat > ~/.openclaw/.env" <<ENV
-${api_key_env}=${API_KEY}
-PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-CHROME_PATH=/usr/bin/chromium-browser
-ENV
-    vm_ssh "chmod 600 ~/.openclaw/.env"
-
-    # Also set it in the shell environment for CLI usage (openclaw tui, etc.)
-    vm_ssh "cat > /etc/profile.d/openclaw.sh" <<ENV
-export ${api_key_env}="${API_KEY}"
-export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-export CHROME_PATH=/usr/bin/chromium-browser
-ENV
-    vm_ssh "chmod 600 /etc/profile.d/openclaw.sh"
+    write_openclaw_env "$api_key_env" "$API_KEY"
 
     # ---- Start OpenClaw gateway ----
 
@@ -835,21 +850,7 @@ do_reconfig() {
     [ -n "$gw_token" ] || gw_token=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)
 
     write_openclaw_config "$model_ref" "$gw_token"
-
-    # Update API key
-    vm_ssh "cat > ~/.openclaw/.env" <<ENV
-${api_key_env}=${API_KEY}
-PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-CHROME_PATH=/usr/bin/chromium-browser
-ENV
-    vm_ssh "chmod 600 ~/.openclaw/.env"
-
-    vm_ssh "cat > /etc/profile.d/openclaw.sh" <<ENV
-export ${api_key_env}="${API_KEY}"
-export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-export CHROME_PATH=/usr/bin/chromium-browser
-ENV
-    vm_ssh "chmod 600 /etc/profile.d/openclaw.sh"
+    write_openclaw_env "$api_key_env" "$API_KEY"
 
     # Switch LLM proxy if the provider changed
     local old_llm_domain

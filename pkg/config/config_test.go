@@ -162,10 +162,36 @@ func TestLoadClientConfig_Defaults(t *testing.T) {
 	if cfg.Daemon.Socket != "/var/run/testnet-client.sock" {
 		t.Fatalf("expected default socket, got %s", cfg.Daemon.Socket)
 	}
+	if cfg.Daemon.DataDir != "~/.testnet/data" {
+		t.Fatalf("expected default data_dir ~/.testnet/data, got %s", cfg.Daemon.DataDir)
+	}
+	if cfg.Daemon.WGConfig != "~/.testnet/wg.conf" {
+		t.Fatalf("expected default wg_config ~/.testnet/wg.conf, got %s", cfg.Daemon.WGConfig)
+	}
 	if cfg.Sandbox.DefaultVCPU != 1 {
 		t.Fatalf("expected default vcpu 1, got %d", cfg.Sandbox.DefaultVCPU)
 	}
 	if cfg.Sandbox.DefaultMemMB != 512 {
 		t.Fatalf("expected default mem 512, got %d", cfg.Sandbox.DefaultMemMB)
+	}
+}
+
+// TestSetClientDefaults_EmptyConfig ensures a completely zero-valued
+// ClientConfig — the fallback the testnet-client root cmd uses when no
+// config file can be read — survives daemon initialization. Without this,
+// regressions cause the daemon to die with "mkdir : no such file or
+// directory" during startup.
+func TestSetClientDefaults_EmptyConfig(t *testing.T) {
+	cfg := &ClientConfig{}
+	SetClientDefaults(cfg)
+
+	if cfg.Daemon.DataDir == "" {
+		t.Error("Daemon.DataDir must not be empty after SetClientDefaults")
+	}
+	if cfg.Daemon.WGConfig == "" {
+		t.Error("Daemon.WGConfig must not be empty after SetClientDefaults")
+	}
+	if cfg.Daemon.Socket == "" {
+		t.Error("Daemon.Socket must not be empty after SetClientDefaults")
 	}
 }

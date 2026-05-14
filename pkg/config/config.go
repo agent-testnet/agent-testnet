@@ -141,9 +141,23 @@ func setServerDefaults(cfg *ServerConfig) {
 }
 
 // SetClientDefaults applies defaults to a ClientConfig.
+//
+// These defaults must keep an entirely empty ClientConfig usable. The
+// testnet-client root command falls back to &ClientConfig{} when the on-disk
+// config cannot be read (e.g. systemd unit started without $HOME → config
+// path resolves to a non-existent /.testnet/config.yaml). Without sane
+// Daemon.{DataDir,WGConfig} defaults the daemon then dies with the cryptic
+// "Error: mkdir : no such file or directory" because daemon.New calls
+// os.MkdirAll("") on a blank data_dir.
 func SetClientDefaults(cfg *ClientConfig) {
 	if cfg.Daemon.Socket == "" {
 		cfg.Daemon.Socket = "/var/run/testnet-client.sock"
+	}
+	if cfg.Daemon.DataDir == "" {
+		cfg.Daemon.DataDir = "~/.testnet/data"
+	}
+	if cfg.Daemon.WGConfig == "" {
+		cfg.Daemon.WGConfig = "~/.testnet/wg.conf"
 	}
 	if cfg.Sandbox.DefaultVCPU == 0 {
 		cfg.Sandbox.DefaultVCPU = 1
