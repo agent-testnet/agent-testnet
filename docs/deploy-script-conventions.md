@@ -113,6 +113,8 @@ On soft teardown, the state file is pruned to keep only persistent keys:
 eip_alloc_id, eip_public_ip, vol_<role>, az
 ```
 
+In agent-testnet, `client_names` and every per-client volume key (`vol_client_<name>`) are preserved in addition, so re-deploying brings the same set of clients back on top of their existing volumes.
+
 Everything else (instance IDs, VPC, SG, key name, IPs) is removed. On `--full`, the state file is deleted entirely.
 
 ## 4. State File Format
@@ -157,6 +159,44 @@ State keys are `snake_case`. Common keys across all scripts:
 | `vpc_id` | VPC ID (agent-testnet only, others use default VPC) |
 | `key_name` | SSH key pair name |
 | `key_file` | Path to local SSH key file |
+
+### agent-testnet multi-client extension
+
+The agent-testnet deploy script supports any number of independent clients in a single state file. Each client has a name (default: an auto-assigned numeric index, override with `--client NAME`). Clients use the following per-name keys:
+
+| Key | Description |
+|-----|-------------|
+| `client_names` | Space-separated list of registered client names, e.g. `0 alice` |
+| `instance_client_<name>` | EC2 instance id for that client |
+| `ip_client_<name>` | Public IP for that client |
+| `vol_client_<name>` | EBS data volume id for that client |
+
+`server_url` and `join_token` are stored at the top level (no role suffix) and are reused by every client deploy in the same state file.
+
+Legacy state files using the unsuffixed `instance_client` / `ip_client` / `vol_client` keys are migrated to per-name keys (with the legacy entry assigned to client `0`) on first read; no manual intervention needed.
+
+### agent-testnet role/client-aware subcommands
+
+Operations subcommands accept a `--client NAME` flag to disambiguate which client to target. When exactly one client is registered, the flag may be omitted and that client is auto-selected; with two or more clients an explicit `--client` is required:
+
+```bash
+bash deploy/aws-deploy.sh ssh client --client alice
+bash deploy/aws-deploy.sh logs client --client alice
+bash deploy/aws-deploy.sh openclaw chat --client alice
+```
+
+In addition to the standard `deploy` / `teardown` / `status` / etc., agent-testnet exposes role-specific subcommands:
+
+| Action | Description |
+|--------|-------------|
+| `server-deploy` | Provision the server tier alone (idempotent network resource creation). |
+| `node-deploy` | Provision the node tier alone (re-pushes nodes.yaml + reload after install). |
+| `client-deploy [--client NAME] [--server-url URL] [--join-token TOK]` | Provision one client. With no `--server-url` / `--join-token`, reuses values from state (server already deployed locally). |
+| `client-remove --client NAME` | Terminate a single client EC2; preserves its data volume by default. |
+
+### Client-side passthrough proxies
+
+Agent VMs on a client EC2 can reach a real upstream domain (e.g. an LLM API) through a host-side TCP forwarder owned by the `testnet-client` daemon. This is independent of the deploy script; the forwarder is allocated an IP from the client passthrough range (`83.150.255.0/24` for public visibility, `172.16.<vmIndex>.0/24` for private) and aliased onto the per-VM TAP. The OpenClaw subcommand uses this under the hood for the LLM proxy. See [Agent Proxies](agent-proxies.md) for the `testnet-client agent proxy add/remove/list` CLI and IP layout.
 
 ## 5. Shell Conventions
 

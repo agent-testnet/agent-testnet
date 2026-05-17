@@ -39,15 +39,55 @@ cp configs/nodes.yaml.example configs/nodes.yaml
 bash deploy/aws-deploy.sh deploy
 ```
 
+`deploy` provisions the full stack (server + node + a single client named `0`). For tier-by-tier control use the role-specific subcommands instead, each of which is idempotent and reuses any shared network resources (VPC, subnet, key pair, etc.) already in the state file:
+
+```bash
+bash deploy/aws-deploy.sh server-deploy
+bash deploy/aws-deploy.sh node-deploy
+bash deploy/aws-deploy.sh client-deploy --client alice
+```
+
 Other commands:
 
 ```bash
-bash deploy/aws-deploy.sh status     # Show instance IPs
-bash deploy/aws-deploy.sh ssh node   # SSH into a role
-bash deploy/aws-deploy.sh reload     # Push updated nodes.yaml + reload server
-bash deploy/aws-deploy.sh test       # Run integration tests on the client
-bash deploy/aws-deploy.sh teardown   # Destroy all resources
+bash deploy/aws-deploy.sh status                # Show all instance IPs (incl. each client)
+bash deploy/aws-deploy.sh ssh node              # SSH into a role
+bash deploy/aws-deploy.sh ssh client --client alice
+bash deploy/aws-deploy.sh reload                # Push updated nodes.yaml + reload server
+bash deploy/aws-deploy.sh test --client alice   # Run integration tests on a specific client
+bash deploy/aws-deploy.sh teardown              # Destroy all resources
 ```
+
+### Multiple clients
+
+A single deployment can host any number of clients side-by-side. Each gets its own EC2, its own data volume, and is addressed by name on the operations subcommands. When only one client exists, `--client` is optional.
+
+```bash
+# Add another client (auto-names "1", "2", ... if --client is omitted).
+bash deploy/aws-deploy.sh client-deploy --client alice
+bash deploy/aws-deploy.sh client-deploy --client bob
+
+# Operate on a specific client.
+bash deploy/aws-deploy.sh ssh client --client alice
+bash deploy/aws-deploy.sh logs client --client alice
+bash deploy/aws-deploy.sh openclaw install --client alice --api-key sk-...
+bash deploy/aws-deploy.sh openclaw chat --client alice
+
+# Remove a single client (preserves its data volume by default).
+bash deploy/aws-deploy.sh client-remove --client alice
+```
+
+### Joining an existing testnet from another machine
+
+A testnet is shared infrastructure: one operator runs the server + nodes, and anyone with a join token can attach a client and run their own agents. From a separate AWS account (or a fresh checkout of this repo), provision just a client and point it at the operator's server:
+
+```bash
+bash deploy/aws-deploy.sh client-deploy \
+  --server-url https://<SERVER_IP>:8443 \
+  --join-token <token>
+```
+
+The script creates a minimal VPC + client security group + key pair in the local AWS account, launches one client EC2, and runs the same `install.sh client` flow against the remote server.
 
 ### Manual (per-host)
 
@@ -147,6 +187,7 @@ make smoke
 - WireGuard tunnel (`10.99.0.0/16`) is the sole egress path from agent VMs
 - Server-side iptables DNAT maps VIPs to real node IPs
 - Agent VMs are isolated: only VIP traffic is forwarded, all other egress is dropped
+- The `83.150.255.0/24` slice is reserved for **client-side per-VM passthrough proxies** that let an agent reach a real upstream (LLM API, package registry, etc.) without leaving the testnet's address space — see [Agent Proxies](docs/agent-proxies.md) for the two spoofing modes (server-side `nodes.yaml` vs client-side `testnet-client agent proxy`).
 
 ## Security
 
