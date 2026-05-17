@@ -8,6 +8,49 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// IP-range conventions shared across the testnet.
+//
+// The full VIP space is a /16 (default 83.150.0.0/16). The testnet operator's
+// VIPAllocator (used by `nodes.yaml`-driven testnet services) only hands out
+// addresses in the first /17-ish portion of that space; the last /24 is
+// permanently reserved for **client-side per-VM passthrough proxies** (see
+// client/sandbox/proxy.go). That separation lets every client host
+// independently allocate IPs in the reserved tail without coordinating with
+// the server, while still keeping public-looking IPs from a single coherent
+// /16.
+//
+// Why the split: agent VMs run with a strict SSRF guard in some agents (e.g.
+// OpenClaw) that rejects URL fetches resolving to RFC1918 / "special-use" IPs.
+// Aliasing the LLM proxy to a 83.150.x.y address makes it look "public" to
+// the agent while still being intercepted locally by the host's TAP, all
+// without colliding with operator-allocated VIPs.
+const (
+	// VIPSubnetDefault is the default VIP subnet — both the umbrella for
+	// server-side VIP allocation and the home of the client-side passthrough
+	// reservation.
+	VIPSubnetDefault = "83.150.0.0/16"
+
+	// DNSVIPDefault is the reserved DNS virtual IP.
+	DNSVIPDefault = "83.150.0.1"
+
+	// VIPAllocatorMaxOctet is the largest third-octet value the server-side
+	// VIPAllocator is allowed to return (inclusive). The walk stops before
+	// crossing into 83.150.255.0/24, which is reserved for client-side
+	// passthrough proxies.
+	VIPAllocatorMaxOctet = 254
+
+	// ClientPassthroughSubnet is the slice of the VIP space reserved for
+	// client-side per-VM passthrough proxies. Each client host independently
+	// allocates IPs in this /24, aliases them onto the relevant TAP device,
+	// and runs a TCP forwarder bound to them.
+	ClientPassthroughSubnet = "83.150.255.0/24"
+
+	// ClientPrivateProxyOffset is the first per-VM IP the client-side proxy
+	// allocator hands out for "private" (172.16.<vmIndex>.x) passthroughs.
+	// Lower addresses (.1 gateway, .2 guest) are reserved for the VM itself.
+	ClientPrivateProxyOffset = 10
+)
+
 // ServerConfig is the top-level server configuration.
 type ServerConfig struct {
 	ControlPlane ControlPlaneConfig `yaml:"controlplane"`
@@ -121,7 +164,7 @@ func setServerDefaults(cfg *ServerConfig) {
 		cfg.ControlPlane.NodesFile = "./configs/nodes.yaml"
 	}
 	if cfg.DNS.ListenTunnel == "" {
-		cfg.DNS.ListenTunnel = "83.150.0.1:53"
+		cfg.DNS.ListenTunnel = DNSVIPDefault + ":53"
 	}
 	if cfg.DNS.RefreshInterval == 0 {
 		cfg.DNS.RefreshInterval = 10 * time.Second
@@ -133,10 +176,10 @@ func setServerDefaults(cfg *ServerConfig) {
 		cfg.WireGuard.TunnelIP = "10.99.0.1/16"
 	}
 	if cfg.VIP.Subnet == "" {
-		cfg.VIP.Subnet = "83.150.0.0/16"
+		cfg.VIP.Subnet = VIPSubnetDefault
 	}
 	if cfg.VIP.DNSVIP == "" {
-		cfg.VIP.DNSVIP = "83.150.0.1"
+		cfg.VIP.DNSVIP = DNSVIPDefault
 	}
 }
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Integration test: launches a Firecracker VM inside the testnet client and
-# verifies network isolation from the agent's perspective.
+# Integration test: launches a Firecracker VM via the testnet-client daemon
+# and verifies network isolation, plus the per-VM passthrough proxy feature
+# (`testnet-client agent proxy add`).
 #
-# Must be run as root on the client host (where testnet-client is installed
-# and setup has completed).
+# Must be run as root on the client host with the testnet-client daemon
+# already running (e.g. `systemctl start testnet-client`).
 #
 # Reads domains from nodes.yaml (passed via NODES_YAML env or first argument,
 # defaults to /opt/testnet/configs/nodes.yaml on the server install path).
@@ -18,13 +19,14 @@
 #   6. HTTPS to the node /health endpoint works
 #   7. Connections to undeclared domains are blocked
 #   8. Connections to arbitrary external IPs are blocked
+#   9. Public per-VM proxy (83.150.255.x) makes a real upstream reachable
+#  10. Removing the proxy returns the VM to the previous "blocked" state
 #
 set -euo pipefail
 
-AGENT_PID=""
+AGENT_ID=""
 GUEST_IP=""
 SSH_KEY=""
-LAUNCH_LOG=""
 PASS=0
 FAIL=0
 TOTAL=0
@@ -32,20 +34,9 @@ TOTAL=0
 cleanup() {
     echo ""
     echo "==> Cleaning up..."
-    if [ -n "$AGENT_PID" ]; then
-        kill "$AGENT_PID" 2>/dev/null || true
-        wait "$AGENT_PID" 2>/dev/null || true
+    if [ -n "$AGENT_ID" ]; then
+        testnet-client agent stop "$AGENT_ID" 2>/dev/null || true
     fi
-    # Remove TAP device and iptables rules left by the VM in case the agent
-    # process didn't shut down cleanly (the issue that caused "Device or
-    # resource busy" on re-runs).
-    for tap in $(ip -o link show 2>/dev/null | grep -oP 'tap-\d+' || true); do
-        ip link del dev "$tap" 2>/dev/null || true
-    done
-    iptables -F FORWARD 2>/dev/null || true
-    iptables -t nat -F PREROUTING 2>/dev/null || true
-    iptables -t nat -F POSTROUTING 2>/dev/null || true
-    [ -n "$LAUNCH_LOG" ] && rm -f "$LAUNCH_LOG"
     echo "    Done."
 }
 trap cleanup EXIT
@@ -122,6 +113,12 @@ if ! ip link show wg-testnet >/dev/null 2>&1; then
     exit 1
 fi
 
+if ! testnet-client agent list >/dev/null 2>&1; then
+    echo "ERROR: testnet-client daemon is not reachable (agent commands need the socket)." >&2
+    echo "  Start it with: systemctl start testnet-client (or 'testnet-client daemon start')" >&2
+    exit 1
+fi
+
 # ---- Load domains from nodes.yaml ----
 
 NODES_FILE="${1:-${NODES_YAML:-/opt/testnet/configs/nodes.yaml}}"
@@ -175,46 +172,35 @@ echo "  Domains:      ${DECLARED_DOMAINS[*]}"
 echo "  Auto-names:   ${AUTO_NAMES[*]}"
 echo ""
 
-# Clean up stale resources from previous runs (TAP devices, iptables rules,
-# agent directories) so the launch doesn't fail with "Device or resource busy".
+# Stop any previously-launched test agents so a fresh run gets a fresh VM.
+# We let the daemon do the heavy lifting (TAP cleanup, iptables, proxies)
+# rather than mass-flushing iptables ourselves.
 echo "--- Pre-launch cleanup ---"
-for tap in $(ip -o link show 2>/dev/null | grep -oP 'tap-\d+' || true); do
-    echo "  Removing stale TAP: $tap"
-    ip link del dev "$tap" 2>/dev/null || true
+EXISTING=$(testnet-client agent list --json 2>/dev/null | \
+    python3 -c 'import json, sys
+data = json.load(sys.stdin) or []
+for a in data:
+    print(a.get("id", ""))' || true)
+for id in $EXISTING; do
+    [ -z "$id" ] && continue
+    echo "  Stopping leftover agent: $id"
+    testnet-client agent stop "$id" 2>/dev/null || true
 done
-iptables -F FORWARD 2>/dev/null || true
-iptables -t nat -F PREROUTING 2>/dev/null || true
-iptables -t nat -F POSTROUTING 2>/dev/null || true
-rm -rf /root/.testnet/data/agents/agent-* 2>/dev/null || true
 echo ""
 
 echo "--- Launching agent VM ---"
-LAUNCH_LOG=$(mktemp)
-testnet-client agent launch --standalone > "$LAUNCH_LOG" 2>&1 &
-AGENT_PID=$!
-
-# Wait for the launch output to contain SSH info (up to 30s)
-for i in $(seq 1 30); do
-    if grep -q "SSH:" "$LAUNCH_LOG" 2>/dev/null; then
-        break
-    fi
-    if ! kill -0 "$AGENT_PID" 2>/dev/null; then
-        echo "ERROR: Agent process died during launch"
-        cat "$LAUNCH_LOG"
-        exit 1
-    fi
-    sleep 1
-done
-
-if ! grep -q "SSH:" "$LAUNCH_LOG"; then
-    echo "ERROR: VM did not launch within 30s"
-    cat "$LAUNCH_LOG"
+# --standalone=false routes the launch through the systemd-managed daemon so
+# the proxy tests below (which speak the unix socket) hit the same process
+# that owns the agent.
+LAUNCH_JSON=$(testnet-client agent launch --json --standalone=false 2>&1) || {
+    echo "ERROR: testnet-client agent launch failed"
+    echo "$LAUNCH_JSON"
     exit 1
-fi
+}
 
-GUEST_IP=$(grep "Guest IP:" "$LAUNCH_LOG" | awk '{print $NF}')
-SSH_KEY=$(grep "SSH:" "$LAUNCH_LOG" | awk '{for(i=1;i<=NF;i++) if($i=="-i") print $(i+1)}')
-AGENT_ID=$(grep "ID:" "$LAUNCH_LOG" | head -1 | awk '{print $NF}')
+AGENT_ID=$(echo "$LAUNCH_JSON" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
+GUEST_IP=$(echo "$LAUNCH_JSON" | python3 -c 'import json, sys; print(json.load(sys.stdin)["tunnel_ip"])')
+SSH_KEY=$(echo "$LAUNCH_JSON" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("ssh_key_path", ""))')
 
 echo "  Agent ID:  $AGENT_ID"
 echo "  Guest IP:  $GUEST_IP"
@@ -234,8 +220,6 @@ done
 
 if ! $VM_READY; then
     echo "ERROR: VM not SSH-reachable after 60s"
-    echo "Agent log:"
-    cat "$LAUNCH_LOG"
     exit 1
 fi
 echo "  VM is ready."
@@ -305,6 +289,73 @@ check_fail "Cannot reach metadata service (169.254.169.254)" \
 
 check_fail "Cannot ping external host (1.1.1.1)" \
     vm_ssh "ping -c 1 -W 3 1.1.1.1 2>/dev/null"
+
+echo ""
+echo "--- Passthrough Proxy Tests ---"
+
+# Use a real-but-stable external host as the proxy upstream. example.com is
+# IANA-managed and answers HTTPS, which is enough to verify the TCP forwarder
+# end-to-end.
+PROXY_DOMAIN="example.com"
+
+check_fail "(baseline) ${PROXY_DOMAIN} is unreachable from VM before proxy" \
+    vm_ssh "curl -sf --max-time 5 https://${PROXY_DOMAIN}/ 2>/dev/null"
+
+# Add a public proxy via the daemon. Capture the JSON to assert the IP came
+# from the public passthrough range (83.150.255.x).
+PROXY_ADD_JSON=$(testnet-client agent proxy add "$AGENT_ID" "$PROXY_DOMAIN" --visibility public --json 2>&1) || {
+    echo "  FAIL: 'agent proxy add' command failed: $PROXY_ADD_JSON"
+    FAIL=$((FAIL + 1))
+    TOTAL=$((TOTAL + 1))
+}
+PROXY_IP=$(echo "$PROXY_ADD_JSON" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("ip", ""))' 2>/dev/null || echo "")
+
+TOTAL=$((TOTAL + 1))
+if [[ "$PROXY_IP" =~ ^83\.150\.255\.[0-9]+$ ]]; then
+    echo "  PASS: public proxy IP is in 83.150.255.0/24 (got $PROXY_IP)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: expected public proxy IP in 83.150.255.0/24, got '$PROXY_IP'"
+    FAIL=$((FAIL + 1))
+fi
+
+check_output "VM /etc/hosts has ${PROXY_DOMAIN} -> ${PROXY_IP}" "$PROXY_IP" \
+    vm_ssh "grep ' ${PROXY_DOMAIN}\$' /etc/hosts"
+
+# The TCP forwarder is dumb passthrough, so curl from inside the VM to
+# https://example.com/ should reach the real upstream and validate the cert.
+check "HTTPS to ${PROXY_DOMAIN} via public passthrough proxy" \
+    vm_ssh "curl -sf --max-time 10 https://${PROXY_DOMAIN}/ 2>/dev/null"
+
+# Now remove the proxy and confirm the VM is back to "isolated".
+testnet-client agent proxy remove "$AGENT_ID" "$PROXY_DOMAIN" >/dev/null 2>&1 || true
+
+check_fail "${PROXY_DOMAIN} is unreachable again after proxy removal" \
+    vm_ssh "curl -sf --max-time 5 https://${PROXY_DOMAIN}/ 2>/dev/null"
+
+# Also exercise the private (172.16.<vm>.x) flavour. Useful for verifying the
+# private allocator works end-to-end even if no consumer in the test cares
+# about the IP source.
+PRIV_ADD_JSON=$(testnet-client agent proxy add "$AGENT_ID" "$PROXY_DOMAIN" --visibility private --json 2>&1) || {
+    echo "  FAIL: private proxy add failed: $PRIV_ADD_JSON"
+    FAIL=$((FAIL + 1))
+    TOTAL=$((TOTAL + 1))
+}
+PRIV_IP=$(echo "$PRIV_ADD_JSON" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("ip", ""))' 2>/dev/null || echo "")
+
+TOTAL=$((TOTAL + 1))
+if [[ "$PRIV_IP" =~ ^172\.16\.[0-9]+\.[0-9]+$ ]]; then
+    echo "  PASS: private proxy IP is in 172.16/12 (got $PRIV_IP)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: expected private proxy IP in 172.16/12, got '$PRIV_IP'"
+    FAIL=$((FAIL + 1))
+fi
+
+check "HTTPS to ${PROXY_DOMAIN} via private passthrough proxy" \
+    vm_ssh "curl -sf --max-time 10 https://${PROXY_DOMAIN}/ 2>/dev/null"
+
+testnet-client agent proxy remove "$AGENT_ID" "$PROXY_DOMAIN" >/dev/null 2>&1 || true
 
 echo ""
 echo "==============================="

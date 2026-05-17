@@ -73,11 +73,12 @@ type NodeInfo struct {
 
 // AgentInfo describes a running agent VM.
 type AgentInfo struct {
-	ID       string `json:"id"`
-	TunnelIP string `json:"tunnel_ip"`
-	Status   string `json:"status"`
-	VCPU     int    `json:"vcpu"`
-	MemMB    int    `json:"mem_mb"`
+	ID         string `json:"id"`
+	TunnelIP   string `json:"tunnel_ip"`
+	Status     string `json:"status"`
+	VCPU       int    `json:"vcpu"`
+	MemMB      int    `json:"mem_mb"`
+	SSHKeyPath string `json:"ssh_key_path,omitempty"`
 }
 
 // AgentConfig specifies how to launch an agent VM.
@@ -85,6 +86,48 @@ type AgentConfig struct {
 	RootFS string `json:"rootfs,omitempty"`
 	VCPU   int    `json:"vcpu,omitempty"`
 	MemMB  int    `json:"mem_mb,omitempty"`
+}
+
+// Proxy visibility levels for client-side per-VM passthrough proxies.
+//
+// Public proxies are aliased on a host-side TAP device using an address
+// in the testnet's reserved client passthrough subnet (default
+// 83.150.255.0/24). They look like a public IP to the agent — useful for
+// agents whose URL fetch SSRF guard rejects RFC1918 / "special-use" IPs
+// (e.g. OpenClaw blocking https://openrouter.ai when it resolves to
+// 172.16.x.y).
+//
+// Private proxies use the agent's per-VM /24 (172.16.<vmIndex>.0/24) and
+// are sufficient for plumbing whose consumers don't care about the source
+// IP (apk, npm, git, etc.).
+const (
+	ProxyVisibilityPublic  = "public"
+	ProxyVisibilityPrivate = "private"
+)
+
+// ProxyConfig is the request payload for `agent proxy add`.
+type ProxyConfig struct {
+	AgentID    string `json:"agent_id"`
+	Domain     string `json:"domain"`
+	Visibility string `json:"visibility,omitempty"` // ProxyVisibilityPublic (default) or ProxyVisibilityPrivate
+	Ports      []int  `json:"ports,omitempty"`      // defaults to [443]
+	Upstream   string `json:"upstream,omitempty"`   // defaults to <domain>:<first port>
+}
+
+// ProxyInfo describes a running passthrough proxy for an agent VM.
+type ProxyInfo struct {
+	AgentID    string `json:"agent_id"`
+	Domain     string `json:"domain"`
+	Visibility string `json:"visibility"`
+	IP         string `json:"ip"`
+	Ports      []int  `json:"ports"`
+	Upstream   string `json:"upstream"`
+}
+
+// ProxyRef identifies a proxy for remove / lookup operations.
+type ProxyRef struct {
+	AgentID string `json:"agent_id"`
+	Domain  string `json:"domain"`
 }
 
 // DaemonRequest is used for CLI-to-daemon communication over the Unix socket.

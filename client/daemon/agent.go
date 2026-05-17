@@ -22,11 +22,13 @@ import (
 type AgentInstance struct {
 	mu         sync.Mutex
 	id         string
+	vmIndex    int
 	tunnelIP   net.IP
 	vm         *sandbox.VM
 	network    *sandbox.NetworkConfig
 	status     string
 	sshKeyPath string
+	proxies    map[string]*sandbox.Proxy // domain -> running proxy
 }
 
 // Info returns the agent's public info.
@@ -34,11 +36,12 @@ func (a *AgentInstance) Info() api.AgentInfo {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return api.AgentInfo{
-		ID:       a.id,
-		TunnelIP: a.tunnelIP.String(),
-		Status:   a.status,
-		VCPU:     a.vm.VCPU(),
-		MemMB:    a.vm.MemMB(),
+		ID:         a.id,
+		TunnelIP:   a.tunnelIP.String(),
+		Status:     a.status,
+		VCPU:       a.vm.VCPU(),
+		MemMB:      a.vm.MemMB(),
+		SSHKeyPath: a.sshKeyPath,
 	}
 }
 
@@ -126,13 +129,20 @@ func (d *Daemon) LaunchAgent(cfg api.AgentConfig) (*AgentInstance, error) {
 	tunnelIP := net.ParseIP(netCfg.GuestIP)
 	agent := &AgentInstance{
 		id:         agentID,
+		vmIndex:    vmIndex,
 		tunnelIP:   tunnelIP,
 		vm:         vm,
 		network:    netCfg,
 		status:     "running",
 		sshKeyPath: sshKeyPath,
+		proxies:    make(map[string]*sandbox.Proxy),
 	}
 	d.agents[agentID] = agent
+
+	// Stale proxies.json from a previous run of this agent ID would describe
+	// proxies that no longer exist (the VM is brand new and Firecracker
+	// rebuilt the TAP from scratch). Drop it so AddProxy starts fresh.
+	_ = os.Remove(filepath.Join(agentDir, proxyStateFileName))
 
 	log.Printf("[daemon] launched agent %s (guest IP: %s, %d vCPU, %dMB RAM)",
 		agentID, netCfg.GuestIP, vcpu, memMB)
@@ -155,12 +165,23 @@ func (d *Daemon) StopAgent(id string) error {
 
 	agent.status = "stopping"
 
+	// Tear down per-agent proxies first so their TAP aliases / iptables rules
+	// disappear before TeardownNetwork removes the TAP itself.
+	for domain, p := range agent.proxies {
+		p.Stop()
+		d.proxyAlloc.Release(p.Spec().IP)
+		delete(agent.proxies, domain)
+	}
+
 	if err := agent.vm.Stop(); err != nil {
 		log.Printf("[daemon] error stopping VM %s: %v", id, err)
 	}
 
 	sandbox.TeardownNetwork(agent.network)
 	agent.status = "stopped"
+
+	// Drop the proxy state file so a future agent with the same ID starts clean.
+	_ = os.Remove(filepath.Join(d.dataDir, "agents", id, proxyStateFileName))
 
 	log.Printf("[daemon] stopped agent %s", id)
 	return nil

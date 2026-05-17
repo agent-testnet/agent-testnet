@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"sync"
+
+	"github.com/agent-testnet/agent-testnet/pkg/config"
 )
 
 // VIPAllocator manages virtual IP allocation from the VIP subnet (default 83.150.0.0/16).
@@ -85,13 +87,16 @@ func (v *VIPAllocator) AllAllocations() map[string]net.IP {
 func (v *VIPAllocator) nextIP() net.IP {
 	base := v.subnet.IP.To4()
 	for {
+		// Stop before walking into the reserved tail /24 (e.g. 83.150.255.0/24),
+		// which belongs to client-side passthrough proxies. See
+		// config.ClientPassthroughSubnet.
+		if v.nextOctet[0] > config.VIPAllocatorMaxOctet {
+			return nil
+		}
 		ip := net.IPv4(base[0], base[1], v.nextOctet[0], v.nextOctet[1])
 		v.nextOctet[1]++
 		if v.nextOctet[1] == 0 {
 			v.nextOctet[0]++
-			if v.nextOctet[0] == 0 {
-				return nil // exhausted
-			}
 		}
 
 		if ip.Equal(v.dnsVIP) {

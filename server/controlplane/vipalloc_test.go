@@ -1,6 +1,8 @@
 package controlplane
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -117,5 +119,37 @@ func TestVIPAllocator_InvalidDNSVIP(t *testing.T) {
 	_, err := NewVIPAllocator("83.150.0.0/16", "invalid")
 	if err == nil {
 		t.Fatal("expected error for invalid DNS VIP")
+	}
+}
+
+// TestVIPAllocator_StopsBeforeReservedTail verifies the allocator never hands
+// out an address in the last /24 of a /16 VIP subnet (e.g. 83.150.255.0/24),
+// which is reserved for client-side passthrough proxies.
+func TestVIPAllocator_StopsBeforeReservedTail(t *testing.T) {
+	va, err := NewVIPAllocator("83.150.0.0/16", "83.150.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fast-forward to the very end of the allocatable range so the test
+	// doesn't have to allocate ~65k VIPs.
+	va.nextOctet = [2]byte{254, 253}
+
+	got := []string{}
+	for i := 0; i < 5; i++ {
+		ip, err := va.AllocateVIP(fmt.Sprintf("k-%d", i))
+		if err != nil {
+			break
+		}
+		got = append(got, ip.String())
+	}
+
+	want := []string{"83.150.254.253", "83.150.254.254", "83.150.254.255"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected the last three allocations to be %v, got %v", want, got)
+	}
+
+	if _, err := va.AllocateVIP("after-reserved"); err == nil {
+		t.Fatal("expected error after exhausting the allocatable range, got nil")
 	}
 }

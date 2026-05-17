@@ -13,23 +13,25 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/agent-testnet/agent-testnet/client/sandbox"
 	"github.com/agent-testnet/agent-testnet/pkg/api"
 	"github.com/agent-testnet/agent-testnet/pkg/config"
 )
 
 // Daemon is the testnet-client background service.
 type Daemon struct {
-	cfg        *config.ClientConfig
-	dataDir    string
-	mu         sync.Mutex
-	agents     map[string]*AgentInstance
+	cfg         *config.ClientConfig
+	dataDir     string
+	mu          sync.Mutex
+	agents      map[string]*AgentInstance
 	nextAgentIP byte
-	tunnelCIDR string
-	dnsIP      string
-	caCertPEM  []byte
-	apiToken   string
-	serverURL  string
-	cancel     context.CancelFunc // set when Run starts
+	tunnelCIDR  string
+	dnsIP       string
+	caCertPEM   []byte
+	apiToken    string
+	serverURL   string
+	proxyAlloc  *sandbox.ProxyAllocator // host-wide IP allocator for per-VM passthrough proxies
+	cancel      context.CancelFunc      // set when Run starts
 }
 
 // StateFile is the on-disk format for daemon registration state.
@@ -51,11 +53,17 @@ func New(cfg *config.ClientConfig) (*Daemon, error) {
 		return nil, err
 	}
 
+	proxyAlloc, err := sandbox.NewProxyAllocator()
+	if err != nil {
+		return nil, fmt.Errorf("init proxy allocator: %w", err)
+	}
+
 	d := &Daemon{
 		cfg:         cfg,
 		dataDir:     dataDir,
 		agents:      make(map[string]*AgentInstance),
 		nextAgentIP: 10, // .10 is the first agent IP in the /24
+		proxyAlloc:  proxyAlloc,
 	}
 
 	if err := d.loadState(); err != nil {
@@ -136,6 +144,12 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		d.handleAgentStop(conn, req)
 	case "agent-list":
 		d.handleAgentList(conn)
+	case "agent-proxy-add":
+		d.handleAgentProxyAdd(conn, req)
+	case "agent-proxy-remove":
+		d.handleAgentProxyRemove(conn, req)
+	case "agent-proxy-list":
+		d.handleAgentProxyList(conn, req)
 	case "status":
 		d.handleStatus(conn)
 	case "shutdown":
@@ -193,6 +207,64 @@ func (d *Daemon) handleAgentStop(conn net.Conn, req api.DaemonRequest) {
 func (d *Daemon) handleAgentList(conn net.Conn) {
 	agents := d.ListAgents()
 	writeResponse(conn, true, "", agents)
+}
+
+func (d *Daemon) handleAgentProxyAdd(conn net.Conn, req api.DaemonRequest) {
+	var cfg api.ProxyConfig
+	if !decodePayload(conn, req, &cfg) {
+		return
+	}
+	info, err := d.AddProxy(cfg)
+	if err != nil {
+		writeResponse(conn, false, err.Error(), nil)
+		return
+	}
+	writeResponse(conn, true, "", info)
+}
+
+func (d *Daemon) handleAgentProxyRemove(conn net.Conn, req api.DaemonRequest) {
+	var ref api.ProxyRef
+	if !decodePayload(conn, req, &ref) {
+		return
+	}
+	if err := d.RemoveProxy(ref); err != nil {
+		writeResponse(conn, false, err.Error(), nil)
+		return
+	}
+	writeResponse(conn, true, "", nil)
+}
+
+func (d *Daemon) handleAgentProxyList(conn net.Conn, req api.DaemonRequest) {
+	var ref api.ProxyRef
+	if !decodePayload(conn, req, &ref) {
+		return
+	}
+	infos, err := d.ListProxies(ref.AgentID)
+	if err != nil {
+		writeResponse(conn, false, err.Error(), nil)
+		return
+	}
+	writeResponse(conn, true, "", infos)
+}
+
+// decodePayload re-marshals the JSON payload from a DaemonRequest into the
+// caller's struct, sending an error response and returning false on failure.
+// Centralized so the per-handler boilerplate stays in sync.
+func decodePayload(conn net.Conn, req api.DaemonRequest, out interface{}) bool {
+	if req.Payload == nil {
+		writeResponse(conn, false, "missing payload", nil)
+		return false
+	}
+	data, err := json.Marshal(req.Payload)
+	if err != nil {
+		writeResponse(conn, false, fmt.Sprintf("marshal payload: %v", err), nil)
+		return false
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		writeResponse(conn, false, fmt.Sprintf("invalid payload: %v", err), nil)
+		return false
+	}
+	return true
 }
 
 func (d *Daemon) handleShutdown(conn net.Conn) {

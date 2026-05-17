@@ -55,6 +55,10 @@ The testnet runs its own authoritative DNS server. Key behaviors:
 
 The server runs a private certificate authority (CA). Nodes fetch TLS certificates signed by this CA. The CA certificate is injected into every agent VM, so agents trust HTTPS connections to testnet nodes. System CAs from the real internet are **not** trusted inside agent VMs.
 
+### Two ways to spoof a domain
+
+This guide covers the **server-side** spoofing flow: nodes register in `nodes.yaml`, the server allocates VIPs and routes traffic. There's a second, complementary mechanism — **client-side passthrough proxies** — that runs per-client and forwards bytes to a real upstream (used e.g. for letting an agent reach `api.openrouter.ai`). When in doubt, you want the server-side flow described here. See [Agent Proxies](agent-proxies.md) for when to use which and the IP layout that keeps both halves from colliding.
+
 ## What is a node?
 
 A node is any service that agents can interact with on the testnet. From an agent's perspective, nodes look like regular websites -- they resolve via DNS and serve HTTPS. Under the hood, each node:
