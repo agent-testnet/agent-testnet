@@ -132,6 +132,16 @@ vm_ssh() {
         -i "$SSH_KEY" "root@${AGENT_IP}" "$@"
 }
 
+# Match a running OpenClaw gateway in the VM. We can't grep for
+# "openclaw.*gateway" because Node sets `process.title = "openclaw"`,
+# which strips the argv tail from the cmdline visible to pgrep -f.
+# Instead, identify the gateway by the loopback port it owns (18789).
+# Falls back to a port-less name match if /proc/net/tcp isn't readable
+# (unlikely inside the VM, where we are root).
+gateway_pid_cmd='ss -tlnp 2>/dev/null | awk "/:18789 /{ if (match(\$0,/pid=[0-9]+/)){print substr(\$0,RSTART+4,RLENGTH-4); exit} }"'
+gateway_running_cmd="[ -n \"\$($gateway_pid_cmd)\" ]"
+gateway_kill_cmd="pid=\$($gateway_pid_cmd); [ -n \"\$pid\" ] && kill -9 \$pid 2>/dev/null; pkill -9 -x openclaw 2>/dev/null; true"
+
 # scp wrapper sharing vm_ssh's options. Used by apply_persona to upload
 # the workspace markdown files; using scp instead of `vm_ssh "cat > ..."`
 # avoids quoting headaches around arbitrary persona content.
@@ -853,7 +863,7 @@ CRCONF
     info "Starting OpenClaw gateway (first boot, to materialize agent state)..."
     start_openclaw_gateway
 
-    if ! vm_ssh "pgrep -f '[o]penclaw.*gateway'" >/dev/null 2>&1; then
+    if ! vm_ssh "$gateway_running_cmd"; then
         warn "Gateway may not have started cleanly."
         warn "Log output:"
         vm_ssh "cat ~/.openclaw/gateway.log" 2>/dev/null || true
@@ -867,7 +877,7 @@ CRCONF
         sleep 1
     done
     fix_openrouter_base_url
-    vm_ssh "killall -9 openclaw-gateway 2>/dev/null; pkill -9 -f 'openclaw.*gateway' 2>/dev/null; sleep 1" || true
+    vm_ssh "$gateway_kill_cmd; sleep 1" || true
 
     info "Restarting OpenClaw gateway with patched models.json..."
     start_openclaw_gateway
@@ -883,11 +893,11 @@ CRCONF
         apply_persona "$OPENCLAW_PERSONA" install
 
         info "Restarting gateway to load persona workspace..."
-        vm_ssh "kill -9 \$(pgrep -f '[o]penclaw.*gateway') 2>/dev/null; pkill -9 -f 'openclaw.*gateway' 2>/dev/null; sleep 1" || true
+        vm_ssh "$gateway_kill_cmd; sleep 1" || true
         start_openclaw_gateway
     fi
 
-    if vm_ssh "pgrep -f '[o]penclaw.*gateway'" >/dev/null 2>&1; then
+    if vm_ssh "$gateway_running_cmd"; then
         info "OpenClaw gateway is running!"
     else
         warn "Gateway may not have started cleanly."
@@ -953,7 +963,7 @@ do_chat() {
         err "Agent VM at ${AGENT_IP} is not reachable. Run 'install' first."
     fi
 
-    if ! vm_ssh "pgrep -f '[o]penclaw.*gateway'" >/dev/null 2>&1; then
+    if ! vm_ssh "$gateway_running_cmd"; then
         warn "OpenClaw gateway is not running — starting it..."
         fix_openrouter_base_url
         start_openclaw_gateway
@@ -1013,7 +1023,7 @@ do_status() {
         echo "  OpenClaw:  ${oc_ver}"
     fi
 
-    if vm_ssh "pgrep -f '[o]penclaw.*gateway'" >/dev/null 2>&1; then
+    if vm_ssh "$gateway_running_cmd"; then
         echo "  Gateway:   running"
     else
         echo "  Gateway:   stopped"
@@ -1050,7 +1060,7 @@ do_stop() {
 
     if [ -n "$AGENT_ID" ] && [ -n "$AGENT_IP" ] && [ -n "$SSH_KEY" ]; then
         if vm_ssh "echo ok" >/dev/null 2>&1; then
-            vm_ssh "kill -9 \$(pgrep -f '[o]penclaw') 2>/dev/null || true"
+            vm_ssh "$gateway_kill_cmd"
             info "Gateway stopped."
         fi
     fi
@@ -1124,8 +1134,9 @@ do_reconfig() {
         info "Persona swap requested: $(load_state persona || echo "<none>") -> ${OPENCLAW_PERSONA}"
     fi
 
-    # Stop running gateway
-    vm_ssh "kill \$(pgrep -f '[o]penclaw.*gateway') 2>/dev/null || true"
+    # Stop running gateway. Port-based match — process.title is set to
+    # "openclaw" so argv-based pgrep doesn't find it; see gateway_pid_cmd.
+    vm_ssh "$gateway_kill_cmd"
     sleep 2
 
     local gw_token
@@ -1165,7 +1176,7 @@ do_reconfig() {
     info "Starting OpenClaw gateway..."
     start_openclaw_gateway
 
-    if vm_ssh "pgrep -f '[o]penclaw.*gateway'" >/dev/null 2>&1; then
+    if vm_ssh "$gateway_running_cmd"; then
         info "OpenClaw gateway is running!"
     else
         warn "Gateway may not have started cleanly."

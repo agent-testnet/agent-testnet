@@ -51,6 +51,21 @@ optional.
 mail node ([docs/design_documents/mail-server-design.md](../../docs/design_documents/mail-server-design.md)).
 `eve` ships with heartbeats disabled — she only acts when prompted.
 
+### Heartbeat `target` gotcha
+
+`heartbeat.json` ships with `"target": "last"` even though our agents
+have no chat channel — the heartbeat reply is just dropped, which is
+fine. **Do not set `"target": "none"`.** Despite the OpenClaw docs
+calling it "the default", in practice the runtime emits
+`status: "skipped", reason: "target-none"` on every tick and never
+runs the model when no commitments / `tasks:` block / channel
+delivery target exists. That looks like the heartbeat is firing
+(`openclaw system heartbeat last` keeps updating `ts`) but
+`durationMs` stays around `11ms` and the agent never actually does
+anything. Use `"last"` for any persona whose heartbeat should
+unconditionally invoke the model — the lack of a real "last contact"
+just means the response is discarded.
+
 ## Adding a new persona
 
 1. Create `configs/personas/<NAME>/` with the files above.

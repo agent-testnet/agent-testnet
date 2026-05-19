@@ -1,7 +1,7 @@
 {
   "every": "2m",
   "prompt": "Read HEARTBEAT.md in your workspace and follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.",
-  "target": "none",
+  "target": "last",
   "lightContext": false,
   "isolatedSession": false,
   "directPolicy": "allow",
