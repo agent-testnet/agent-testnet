@@ -28,3 +28,18 @@ router:
 vip:
   subnet: "83.150.0.0/16"
   dns_vip: "83.150.0.1"
+
+# Unified request log: DNS queries, HTTP requests through the MITM proxy,
+# conntrack flows, and iptables-drop events all stream to one JSONL file.
+# Tail with: tail -f ./data/requests.log | jq -c .
+observability:
+  log_file: "./data/requests.log"
+  log_drops: true
+
+# Transparent MITM proxy that terminates agent TLS with on-the-fly
+# testnet-CA-signed certs so HTTP method, URL and status can be logged.
+# Listen addresses must match the REDIRECT targets installed by the
+# router; agents never connect here directly.
+proxy:
+  http_listen: ":18080"
+  https_listen: ":18443"

@@ -100,9 +100,34 @@ func (e *Endpoint) Start(ctx context.Context) error {
 	log.Printf("[wireguard] interface %s up, listening on UDP :%d, pubkey: %s",
 		e.ifaceName, e.cfg.WireGuard.ListenPort, e.pubKey)
 
+	e.restorePeers()
+
 	<-ctx.Done()
 	e.teardownInterface()
 	return nil
+}
+
+// restorePeers re-adds every persisted client as a wg peer. Peers live
+// only in the in-kernel wg device, which is torn down on stop, so without
+// this every server restart would silently strand all existing clients
+// until they re-registered.
+func (e *Endpoint) restorePeers() {
+	clients := e.cp.Registry().ListClients()
+	if len(clients) == 0 {
+		return
+	}
+	restored := 0
+	for _, c := range clients {
+		if c.WGPublicKey == "" || c.TunnelCIDR == "" {
+			continue
+		}
+		if err := e.AddPeer(c.WGPublicKey, c.TunnelCIDR); err != nil {
+			log.Printf("[wireguard] restore peer %s: %v", c.ID, err)
+			continue
+		}
+		restored++
+	}
+	log.Printf("[wireguard] restored %d/%d persisted peers", restored, len(clients))
 }
 
 func (e *Endpoint) setupInterface() error {

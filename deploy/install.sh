@@ -242,6 +242,14 @@ router:
 vip:
   subnet: "83.150.0.0/16"
   dns_vip: "83.150.0.1"
+
+observability:
+  log_file: "/opt/testnet/data/requests.log"
+  log_drops: true
+
+proxy:
+  http_listen: ":18080"
+  https_listen: ":18443"
 YAML
         info "Created ${CONFIG_DIR}/server.yaml"
     fi

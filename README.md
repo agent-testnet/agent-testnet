@@ -185,9 +185,40 @@ make smoke
 - Each declared domain gets a Virtual IP (VIP) in `83.150.0.0/16`
 - Testnet DNS resolves declared domains to VIPs; returns NXDOMAIN for undeclared domains
 - WireGuard tunnel (`10.99.0.0/16`) is the sole egress path from agent VMs
-- Server-side iptables DNAT maps VIPs to real node IPs
+- Server-side iptables transparently REDIRECTs VIP TCP/80 and TCP/443 into the in-process MITM proxy (see [Observability](#observability)), and DNATs every other port to the node's real IP unchanged
 - Agent VMs are isolated: only VIP traffic is forwarded, all other egress is dropped
 - The `83.150.255.0/24` slice is reserved for **client-side per-VM passthrough proxies** that let an agent reach a real upstream (LLM API, package registry, etc.) without leaving the testnet's address space — see [Agent Proxies](docs/agent-proxies.md) for the two spoofing modes (server-side `nodes.yaml` vs client-side `testnet-client agent proxy`).
+
+## Observability
+
+Every agent-originated network event — DNS query, HTTP request, blocked iptables drop, and raw conntrack flow — is appended to a single JSON-lines file (default `/opt/testnet/data/requests.log`). Tail it live:
+
+```bash
+sudo tail -f /opt/testnet/data/requests.log | jq -c '{ts,event,agent,host,path,status,result}'
+```
+
+Sample events (one per line, `event` discriminator):
+
+```json
+{"ts":"...","event":"dns","agent":"10.99.1.1","qname":"google.com","qtype":"A","result":"resolved","vip":"83.150.0.5"}
+{"ts":"...","event":"dns","agent":"10.99.1.1","qname":"hackernews.com","qtype":"A","result":"nxdomain"}
+{"ts":"...","event":"http","agent":"10.99.1.1","method":"GET","host":"google.com","path":"/search?q=cats","status":200,"resp_bytes":15234,"duration_ms":81,"upstream":"52.51.95.13:443","node":"search","tls":true}
+{"ts":"...","event":"http_error","agent":"10.99.1.1","host":"google.com","error":"dial upstream: connection refused"}
+{"ts":"...","event":"drop","agent":"10.99.1.1","dst_ip":"8.8.8.8","dst_port":443,"proto":"tcp","reason":"non-vip"}
+```
+
+How it works:
+
+- **DNS** ([server/dns](server/dns)) logs every query and whether it resolved or returned NXDOMAIN.
+- **HTTP/HTTPS** ([server/proxy](server/proxy)) is a transparent MITM proxy. It mints a leaf cert per SNI using the testnet CA (which agent VMs already trust), terminates TLS, logs `method/host/path/status/resp_bytes/duration_ms`, then re-encrypts to the real node verified against the same CA.
+- **Drops** ([server/observability](server/observability)) come from a rate-limited `iptables -j LOG` rule tailed via `journalctl -k -f`.
+- **Conntrack** ([server/router/logger.go](server/router/logger.go)) emits one `event=conn` line for non-HTTP flows (mail, custom ports) as a backstop.
+
+Caveats:
+
+- The MITM only intercepts TCP/80 and TCP/443. Custom non-HTTP TLS protocols on :443 will not work — use a different port and they'll pass through unchanged via DNAT.
+- Drop tailing requires `journalctl`; on non-systemd hosts the drop tailer silently disables itself.
+- Toggle the drop tailer with `observability.log_drops: false` in `server.yaml`.
 
 ## Security
 
@@ -210,8 +241,10 @@ toolkit/                Toolkit packages (CLI commands + sandbox logic)
   sandbox/
 server/                 Server-side packages
   controlplane/         Registration, CA, VIP allocation
-  dns/                  Testnet DNS server
-  router/               iptables DNAT + traffic logging
+  dns/                  Testnet DNS server (logs every query)
+  observability/        Unified JSON-lines event log + iptables-drop tailer
+  proxy/                Transparent HTTP/HTTPS MITM (logs every request)
+  router/               iptables DNAT/REDIRECT + conntrack logger
   wg/                   WireGuard endpoint management
 client/                 Client-side packages
   cli/                  CLI commands (setup, install, agent, daemon)

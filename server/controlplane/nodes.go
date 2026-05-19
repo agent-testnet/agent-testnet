@@ -170,6 +170,40 @@ func (nm *NodeManager) ResolveDomain(domain string) net.IP {
 	return nil
 }
 
+// NodeForVIP returns the node that owns the given VIP, or nil. Used by the
+// MITM proxy to recover the real upstream after iptables REDIRECT has
+// replaced the destination.
+func (nm *NodeManager) NodeForVIP(vip net.IP) *api.Node {
+	if vip == nil {
+		return nil
+	}
+	nm.mu.RLock()
+	defer nm.mu.RUnlock()
+	for _, n := range nm.nodes {
+		if n.VIP != nil && n.VIP.Equal(vip) {
+			return n
+		}
+	}
+	return nil
+}
+
+// DomainsForVIP returns every domain (including the auto-name) that maps
+// to a given VIP. Useful for log enrichment when only the VIP is known.
+func (nm *NodeManager) DomainsForVIP(vip net.IP) []string {
+	if vip == nil {
+		return nil
+	}
+	nm.mu.RLock()
+	defer nm.mu.RUnlock()
+	var result []string
+	for d, n := range nm.domains {
+		if n.VIP != nil && n.VIP.Equal(vip) {
+			result = append(result, d)
+		}
+	}
+	return result
+}
+
 // AllDomainMappings returns every domain/auto-name with its VIP and owning node name.
 func (nm *NodeManager) AllDomainMappings() []api.DomainMapping {
 	nm.mu.RLock()

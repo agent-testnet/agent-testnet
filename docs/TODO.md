@@ -14,8 +14,9 @@
 
 ## Observability
 - Real-time monitoring dashboard to observe agent activity
-- Per-agent traffic logging and visualization
+- Visualization on top of `data/requests.log` (DNS / HTTP / drop events) — see README "Observability"
 - Alerting on unusual network patterns
+- Per-VM passthrough proxy traffic logging (the `83.150.255.0/24` client-side slice)
 
 ## Hardening
 - Rootfs integrity verification (checksum before launch)

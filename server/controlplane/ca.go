@@ -4,13 +4,16 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,12 +26,20 @@ type CA struct {
 	rootPEM  []byte
 	dataDir  string
 	certDir  string
+
+	leafMu    sync.Mutex
+	leafCache map[string]*tls.Certificate
 }
+
+// leafTTL is the lifetime of MITM-proxy leaf certs minted via
+// IssueLeafForHost. Kept short so a key compromise has limited blast radius.
+const leafTTL = 7 * 24 * time.Hour
 
 func NewCA(dataDir, keyFile, certFile string) (*CA, error) {
 	ca := &CA{
-		dataDir: dataDir,
-		certDir: filepath.Join(dataDir, "certs"),
+		dataDir:   dataDir,
+		certDir:   filepath.Join(dataDir, "certs"),
+		leafCache: make(map[string]*tls.Certificate),
 	}
 	if err := os.MkdirAll(ca.certDir, 0o700); err != nil {
 		return nil, err
@@ -214,6 +225,99 @@ func (ca *CA) IssueCert(nodeName string, domains []string) (certPEM, keyPEM []by
 	}
 
 	return certPEM, keyPEM, nil
+}
+
+// IssueLeafForHost mints a short-lived leaf certificate signed by the
+// testnet CA for an arbitrary SNI hostname (or IP literal). Used by the
+// transparent MITM proxy to terminate TLS for any domain agents request.
+//
+// Certificates are cached in-memory and reused until they enter the last
+// quarter of their TTL, at which point a fresh cert is minted. Nothing is
+// persisted to disk — these certs are ephemeral by design.
+func (ca *CA) IssueLeafForHost(host string) (*tls.Certificate, error) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return nil, fmt.Errorf("issue leaf: empty host")
+	}
+
+	ca.leafMu.Lock()
+	if cert, ok := ca.leafCache[host]; ok {
+		if leafStillFresh(cert) {
+			ca.leafMu.Unlock()
+			return cert, nil
+		}
+		delete(ca.leafCache, host)
+	}
+	ca.leafMu.Unlock()
+
+	cert, err := ca.mintLeaf(host)
+	if err != nil {
+		return nil, err
+	}
+
+	ca.leafMu.Lock()
+	ca.leafCache[host] = cert
+	ca.leafMu.Unlock()
+	return cert, nil
+}
+
+func (ca *CA) mintLeaf(host string) (*tls.Certificate, error) {
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+
+	if ca.rootCert == nil || ca.rootKey == nil {
+		return nil, fmt.Errorf("CA not initialised")
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate leaf key: %w", err)
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, err
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: host},
+		NotBefore:    time.Now().Add(-1 * time.Minute),
+		NotAfter:     time.Now().Add(leafTTL),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		template.IPAddresses = []net.IP{ip}
+	} else {
+		template.DNSNames = []string{host}
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, ca.rootCert, &key.PublicKey, ca.rootKey)
+	if err != nil {
+		return nil, fmt.Errorf("sign leaf cert: %w", err)
+	}
+
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, fmt.Errorf("parse minted leaf: %w", err)
+	}
+
+	return &tls.Certificate{
+		Certificate: [][]byte{der},
+		PrivateKey:  key,
+		Leaf:        parsed,
+	}, nil
+}
+
+// leafStillFresh returns true when a cached leaf has > 25% of its TTL left.
+func leafStillFresh(cert *tls.Certificate) bool {
+	if cert == nil || cert.Leaf == nil {
+		return false
+	}
+	total := cert.Leaf.NotAfter.Sub(cert.Leaf.NotBefore)
+	remaining := time.Until(cert.Leaf.NotAfter)
+	return remaining > total/4
 }
 
 // GenerateAPICert creates a self-signed TLS cert for the control plane API.

@@ -11,6 +11,8 @@ import (
 	"github.com/agent-testnet/agent-testnet/pkg/config"
 	"github.com/agent-testnet/agent-testnet/server/controlplane"
 	"github.com/agent-testnet/agent-testnet/server/dns"
+	"github.com/agent-testnet/agent-testnet/server/observability"
+	"github.com/agent-testnet/agent-testnet/server/proxy"
 	"github.com/agent-testnet/agent-testnet/server/router"
 	"github.com/agent-testnet/agent-testnet/server/wg"
 )
@@ -32,20 +34,28 @@ func main() {
 		log.Fatalf("failed to init control plane: %v", err)
 	}
 
+	obs := observability.New(cfg)
+	defer obs.Close()
+
 	wgEndpoint, err := wg.NewEndpoint(cfg, cp)
 	if err != nil {
 		log.Fatalf("failed to init wireguard endpoint: %v", err)
 	}
 	cp.SetPeerManager(wgEndpoint)
 
-	dnsServer, err := dns.NewServer(cfg, cp)
+	dnsServer, err := dns.NewServer(cfg, cp, obs)
 	if err != nil {
 		log.Fatalf("failed to init dns server: %v", err)
 	}
 
-	rt, err := router.New(cfg, cp)
+	rt, err := router.New(cfg, cp, obs)
 	if err != nil {
 		log.Fatalf("failed to init router: %v", err)
+	}
+
+	mitmProxy, err := proxy.New(cfg, cp, obs)
+	if err != nil {
+		log.Fatalf("failed to init proxy: %v", err)
 	}
 
 	go func() {
@@ -69,6 +79,12 @@ func main() {
 	go func() {
 		if err := rt.Start(ctx); err != nil {
 			log.Fatalf("router error: %v", err)
+		}
+	}()
+
+	go func() {
+		if err := mitmProxy.Start(ctx); err != nil {
+			log.Printf("[proxy] exited: %v", err)
 		}
 	}()
 

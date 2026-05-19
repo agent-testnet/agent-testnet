@@ -53,11 +53,13 @@ const (
 
 // ServerConfig is the top-level server configuration.
 type ServerConfig struct {
-	ControlPlane ControlPlaneConfig `yaml:"controlplane"`
-	DNS          DNSConfig          `yaml:"dns"`
-	WireGuard    WireGuardConfig    `yaml:"wireguard"`
-	Router       RouterConfig       `yaml:"router"`
-	VIP          VIPConfig          `yaml:"vip"`
+	ControlPlane  ControlPlaneConfig  `yaml:"controlplane"`
+	DNS           DNSConfig           `yaml:"dns"`
+	WireGuard     WireGuardConfig     `yaml:"wireguard"`
+	Router        RouterConfig        `yaml:"router"`
+	VIP           VIPConfig           `yaml:"vip"`
+	Observability ObservabilityConfig `yaml:"observability"`
+	Proxy         ProxyConfig         `yaml:"proxy"`
 }
 
 type ControlPlaneConfig struct {
@@ -97,6 +99,38 @@ type RouterConfig struct {
 type VIPConfig struct {
 	Subnet string `yaml:"subnet"`
 	DNSVIP string `yaml:"dns_vip"`
+}
+
+// ObservabilityConfig controls the unified request-event log written by
+// the DNS server, the MITM proxy, the conntrack logger, and the iptables
+// drop tailer. See server/observability for the on-disk format.
+type ObservabilityConfig struct {
+	// LogFile is the JSON-lines event log path. Defaults to
+	// data/requests.log. Tail with: tail -f $LogFile | jq -c .
+	LogFile string `yaml:"log_file"`
+	// LogDrops enables tailing kernel iptables-LOG output for blocked
+	// (non-VIP) egress from the tunnel. Defaults to true.
+	LogDrops *bool `yaml:"log_drops,omitempty"`
+}
+
+// LogDropsEnabled returns the effective value of LogDrops, defaulting to
+// true when unset.
+func (o ObservabilityConfig) LogDropsEnabled() bool {
+	if o.LogDrops == nil {
+		return true
+	}
+	return *o.LogDrops
+}
+
+// ProxyConfig configures the transparent HTTP/HTTPS MITM proxy that
+// intercepts traffic from agent VMs to nodes' :80 and :443. The proxy
+// terminates TLS using leaf certs minted on-the-fly by the testnet CA so
+// that full request URLs and response statuses can be logged.
+type ProxyConfig struct {
+	// HTTPListen is the listen address for plain HTTP (default :8080).
+	HTTPListen string `yaml:"http_listen"`
+	// HTTPSListen is the listen address for TLS MITM (default :8443).
+	HTTPSListen string `yaml:"https_listen"`
 }
 
 // ClientConfig is the top-level client configuration.
@@ -180,6 +214,26 @@ func setServerDefaults(cfg *ServerConfig) {
 	}
 	if cfg.VIP.DNSVIP == "" {
 		cfg.VIP.DNSVIP = DNSVIPDefault
+	}
+	if cfg.Observability.LogFile == "" {
+		// Prefer the legacy router log path if it's set so existing
+		// deployments keep their on-disk location.
+		if cfg.Router.LogFile != "" {
+			cfg.Observability.LogFile = cfg.Router.LogFile
+		} else {
+			cfg.Observability.LogFile = "./data/requests.log"
+		}
+	}
+	if cfg.Proxy.HTTPListen == "" {
+		// Internal MITM ports — REDIRECT targets only, never user-facing.
+		// Avoid :8443 which is the control plane HTTPS API. We bind on
+		// all interfaces (like the control plane) because iptables
+		// REDIRECT rewrites the destination to the wg0 address, not
+		// 127.0.0.1.
+		cfg.Proxy.HTTPListen = ":18080"
+	}
+	if cfg.Proxy.HTTPSListen == "" {
+		cfg.Proxy.HTTPSListen = ":18443"
 	}
 }
 

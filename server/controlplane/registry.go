@@ -77,3 +77,10 @@ func (r *Registry) ValidateAPIToken(token string) (string, bool) {
 	hash := HashToken(token)
 	return r.store.ValidateTokenHash(hash)
 }
+
+// ListClients returns every client currently in the persistent store.
+// Used at server startup to restore WireGuard peers (which live only in
+// the in-kernel wg device and are lost across restarts).
+func (r *Registry) ListClients() []*api.Client {
+	return r.store.ListClients()
+}

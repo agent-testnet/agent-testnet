@@ -42,6 +42,8 @@ When an agent inside a VM tries to visit `github.com`:
 
 The agent never knows it's on a testnet. From its perspective, it resolved a domain and got an HTTPS response -- just like the real internet.
 
+> **Note on TCP/80 and TCP/443**: the server transparently MITMs both ports through an in-process proxy that mints leaf certs on the fly via the testnet CA (which agent VMs already trust). It logs every HTTP request — method, URL, status, byte counts — to `data/requests.log`. Your node continues to serve normal HTTPS as described; the proxy is invisible to it (it just sees connections from the server's address instead of the agent's). The only constraint is that **TCP/443 must speak HTTP/1.1, HTTP/2 or a WebSocket-style upgrade** — custom non-HTTP TLS protocols on :443 won't work. Use a different port for those and the existing DNAT pass-through (which is unchanged) will deliver them untouched.
+
 ### Testnet DNS
 
 The testnet runs its own authoritative DNS server. Key behaviors:
