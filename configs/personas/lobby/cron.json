@@ -1,0 +1,11 @@
+{
+  "jobs": [
+    {
+      "name": "lobby-loop",
+      "every": "2m",
+      "session": "main",
+      "wake": "now",
+      "systemEvent": "Read HEARTBEAT.md in your workspace and follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK."
+    }
+  ]
+}

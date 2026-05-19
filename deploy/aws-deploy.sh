@@ -40,8 +40,9 @@
 # npm `latest` tag. See scripts/install-openclaw.sh header for details.
 #
 # The --persona flag uploads configs/personas/<NAME>/ to the agent VM and
-# applies it (IDENTITY/SOUL/AGENTS/USER/HEARTBEAT.md + heartbeat schedule).
-# On `reconfig` it OVERWRITES those five workspace files, so it requires
+# applies it (IDENTITY/SOUL/AGENTS/USER/HEARTBEAT.md + cron.json schedule).
+# On `reconfig` it OVERWRITES those five workspace files and re-applies
+# the persona's named cron jobs idempotently, so it requires
 # --persona-confirm to acknowledge the overwrite (memory/, MEMORY.md, and
 # anything else in the workspace are preserved). See configs/personas/README.md.
 #

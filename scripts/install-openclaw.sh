@@ -44,9 +44,9 @@
 #                            Pass "latest" to follow the npm latest dist-tag (NOT recommended — see below).
 #   --persona NAME           Apply persona files from $PERSONA_SRC_DIR/<NAME>
 #                            (default /tmp/personas/<NAME>) to the agent VM's
-#                            ~/.openclaw/workspace, splice the persona's
-#                            heartbeat.json into agents.defaults.heartbeat,
-#                            and restart the gateway. On 'reconfig' the
+#                            ~/.openclaw/workspace, provision the persona's
+#                            cron.json jobs via `openclaw cron add`, and
+#                            restart the gateway. On 'reconfig' the
 #                            persona's IDENTITY/SOUL/AGENTS/USER/HEARTBEAT.md
 #                            files are OVERWRITTEN; memory/, MEMORY.md, and
 #                            anything else in the workspace are preserved.
@@ -284,21 +284,112 @@ get_model_ref() {
     fi
 }
 
-# load_persona_heartbeat NAME
+# apply_persona_cron_jobs NAME
 #
-# Reads $PERSONA_SRC_DIR/<NAME>/heartbeat.json and prints it as a single
-# minified JSON object so it can be spliced verbatim into openclaw.json
-# (see write_openclaw_config). Empty output if the persona doesn't ship
-# a heartbeat.json — callers treat that as "no heartbeat block".
-load_persona_heartbeat() {
+# Reads $PERSONA_SRC_DIR/<NAME>/cron.json and creates (or recreates) the
+# persona's cron jobs on the agent VM via `openclaw cron add`. Idempotent:
+# any existing job sharing a name with one in cron.json is removed first,
+# so persona edits apply cleanly on reconfig. Cron jobs not named by the
+# persona (e.g. ones the user created manually) are left alone.
+#
+# Why cron and not heartbeat? OpenClaw heartbeats refuse to invoke the
+# model when there is no real channel delivery target — they emit
+# `status: "skipped", reason: "target-none"` (or `"no-target"` for `last`
+# with no recorded contact) every tick and never run the agent. Our
+# testnet personas have no channel target (they drive side-effects via
+# the browser tool against gmail.com), so cron is the documented correct
+# mechanism — see /usr/local/lib/node_modules/openclaw/docs/automation/cron-vs-heartbeat.md.
+#
+# cron.json schema:
+#   { "jobs": [
+#       { "name": "<unique>",
+#         "every": "2m"           // or "cron": "*/5 * * * *", or "at": "+10m"
+#         "session": "main",      // or "isolated"; default main
+#         "wake": "now",          // or "next-heartbeat"; default now
+#         "systemEvent": "...",   // or "message": "..." (one of)
+#         "tz": "...",            // optional
+#         "model": "...",         // optional override
+#         "timeoutSeconds": 90,   // optional
+#         "lightContext": false,  // optional
+#         "deleteAfterRun": false // optional, useful for one-shot --at jobs
+#       }
+#     ]
+#   }
+#
+# The conversion from JSON → `openclaw cron add` flags is done locally
+# (python3 on the deploy host) so the agent VM doesn't need python3 —
+# only the openclaw CLI, which is already installed there.
+apply_persona_cron_jobs() {
     local name="$1"
-    local hb_path="${PERSONA_SRC_DIR}/${name}/heartbeat.json"
-    [ -f "$hb_path" ] || { echo ""; return; }
-    python3 -c "
-import json, sys
+    local cron_path="${PERSONA_SRC_DIR}/${name}/cron.json"
+    if [ ! -f "$cron_path" ]; then
+        return
+    fi
+
+    local cron_commands
+    cron_commands=$(python3 - "$cron_path" <<'PY'
+import json, shlex, sys
 with open(sys.argv[1]) as f:
-    print(json.dumps(json.load(f)))
-" "$hb_path"
+    data = json.load(f)
+jobs = data.get("jobs", []) if isinstance(data, dict) else []
+if not jobs:
+    sys.exit(0)
+print("set -u")
+for job in jobs:
+    name = job.get("name")
+    if not name:
+        sys.exit("apply_persona_cron_jobs: job missing 'name': %r" % job)
+    # Remove any pre-existing job with this name. `openclaw cron list` prints
+    # a fixed-width table where column 1 = id and column 2 = name; we awk
+    # on the name column for an exact match.
+    print(
+        "existing_ids=$(openclaw cron list 2>/dev/null | "
+        "awk -v n=%s 'NR>1 && $2==n {print $1}'); "
+        "for id in $existing_ids; do "
+        "openclaw cron remove --id \"$id\" >/dev/null 2>&1 || true; "
+        "done"
+        % shlex.quote(name)
+    )
+    parts = ["openclaw cron add", "--name " + shlex.quote(name)]
+    if "every" in job:
+        parts.append("--every " + shlex.quote(str(job["every"])))
+    elif "cron" in job:
+        parts.append("--cron " + shlex.quote(str(job["cron"])))
+    elif "at" in job:
+        parts.append("--at " + shlex.quote(str(job["at"])))
+    else:
+        sys.exit("apply_persona_cron_jobs: job %r missing one of every|cron|at" % name)
+    parts.append("--session " + shlex.quote(job.get("session", "main")))
+    parts.append("--wake "    + shlex.quote(job.get("wake", "now")))
+    if "systemEvent" in job:
+        parts.append("--system-event " + shlex.quote(job["systemEvent"]))
+    elif "message" in job:
+        parts.append("--message " + shlex.quote(job["message"]))
+    if "tz" in job:
+        parts.append("--tz " + shlex.quote(job["tz"]))
+    if "model" in job:
+        parts.append("--model " + shlex.quote(job["model"]))
+    if "timeoutSeconds" in job:
+        parts.append("--timeout-seconds " + shlex.quote(str(job["timeoutSeconds"])))
+    if job.get("lightContext"):
+        parts.append("--light-context")
+    if job.get("deleteAfterRun"):
+        parts.append("--delete-after-run")
+    # Output goes to /dev/null so the install log isn't littered with the
+    # full job JSON dump for each add.
+    print(" ".join(parts) + " >/dev/null")
+PY
+)
+
+    if [ -z "$cron_commands" ]; then
+        info "Persona '${name}' has no cron jobs."
+        return
+    fi
+
+    info "Applying persona '${name}' cron jobs ..."
+    vm_ssh "bash -s" <<EOF
+${cron_commands}
+EOF
 }
 
 # apply_persona NAME MODE
@@ -325,9 +416,15 @@ with open(sys.argv[1]) as f:
 # repo (managed by OpenClaw, not us) is committed if present so the
 # swap shows up in its history.
 #
-# Side effects: saves `persona` and `heartbeat_json` to the local state
-# file so subsequent `reconfig` runs without --persona keep the same
-# heartbeat schedule.
+# If the persona ships a cron.json, apply_persona_cron_jobs is invoked
+# (idempotently). The agent VM's existing cron jobs from prior personas
+# are NOT removed wholesale — only ones sharing a name with the new
+# persona's jobs get replaced. Use `openclaw cron remove` manually if
+# you need to clean up old persona jobs.
+#
+# Side effects: saves `persona` to the local state file so a later
+# `reconfig` without --persona knows which persona is currently
+# installed.
 apply_persona() {
     local name="$1" mode="${2:-install}"
     [ -n "$name" ]              || err "apply_persona: persona name required"
@@ -404,17 +501,24 @@ apply_persona() {
 
     save_state "persona" "$name"
 
-    # Persist the minified heartbeat block so a later `reconfig` run
-    # without --persona can keep the same schedule (the persona tarball
-    # won't be uploaded again in that case).
-    local hb_json
-    hb_json=$(load_persona_heartbeat "$name")
-    save_state "heartbeat_json" "$hb_json"
+    # Cron jobs live on the VM (~/.openclaw/cron/jobs.json) and survive
+    # gateway restarts, so we don't need to persist anything locally to
+    # restore them across `reconfig` calls. They're only re-applied when
+    # --persona is explicitly passed (i.e. the operator wants to roll
+    # forward a persona update).
+    apply_persona_cron_jobs "$name"
 }
 
 # Write ~/.openclaw/openclaw.json in the VM. Keeps install + reconfig in sync.
-# Args: $1 = model_ref, $2 = gateway auth token, $3 = optional heartbeat
-#       JSON object body to splice into agents.defaults.heartbeat
+# Args: $1 = model_ref, $2 = gateway auth token
+#
+# Heartbeats are explicitly disabled (`every: "0m"`) because OpenClaw
+# heartbeats are tied to a delivery channel — without one they emit
+# `status: "skipped", reason: "target-none"` every interval and never
+# invoke the model. The testnet personas use cron jobs instead (see
+# apply_persona_cron_jobs / configs/personas/<NAME>/cron.json), which
+# is the documented correct mechanism for autonomous, side-effect-only
+# scheduled runs.
 #
 # Browser notes:
 #   - ssrfPolicy.dangerouslyAllowPrivateNetwork=true works around OpenClaw
@@ -429,18 +533,7 @@ apply_persona() {
 #     guest (no GPU, no /dev/shm worth using). Avoid --use-gl=swiftshader
 #     here: it crashes on Alpine Chromium in a microVM.
 write_openclaw_config() {
-    local model_ref="$1" gw_token="$2" heartbeat_json="${3:-}"
-
-    # When a persona ships a heartbeat.json, splice it into
-    # agents.defaults.heartbeat. Otherwise we leave the block out and let
-    # OpenClaw fall back to its built-in default (30m / 1h depending on
-    # auth mode). The trailing comma + newline live inside the variable
-    # so the resulting JSON stays valid in both branches.
-    local heartbeat_field=""
-    if [ -n "$heartbeat_json" ]; then
-        heartbeat_field=",
-      \"heartbeat\": ${heartbeat_json}"
-    fi
+    local model_ref="$1" gw_token="$2"
 
     vm_ssh "cat > ~/.openclaw/openclaw.json" <<OCEOF
 {
@@ -449,7 +542,10 @@ write_openclaw_config() {
       "workspace": "~/.openclaw/workspace",
       "model": {
         "primary": "${model_ref}"
-      }${heartbeat_field}
+      },
+      "heartbeat": {
+        "every": "0m"
+      }
     }
   },
   "gateway": {
@@ -846,16 +942,11 @@ CRCONF
     local model_ref
     model_ref=$(get_model_ref "$PROVIDER" "$MODEL")
 
-    # OpenClaw strictly validates config — unknown keys prevent gateway from starting.
-    #
-    # If a persona was requested, splice its heartbeat block into the config
-    # up front. The persona's workspace markdown is uploaded later, after the
-    # gateway has materialized the per-agent state directories.
-    local heartbeat_json=""
-    if [ -n "$OPENCLAW_PERSONA" ]; then
-        heartbeat_json=$(load_persona_heartbeat "$OPENCLAW_PERSONA")
-    fi
-    write_openclaw_config "$model_ref" "$gw_token" "$heartbeat_json"
+    # OpenClaw strictly validates config — unknown keys prevent gateway
+    # from starting. Persona-specific behaviour (cron jobs, workspace
+    # markdown) is applied later via apply_persona, after the gateway has
+    # materialized the per-agent state directories.
+    write_openclaw_config "$model_ref" "$gw_token"
     write_openclaw_env "$api_key_env" "$API_KEY"
 
     # ---- Start OpenClaw gateway ----
@@ -1116,18 +1207,12 @@ do_reconfig() {
     local model_ref
     model_ref=$(get_model_ref "$PROVIDER" "$MODEL")
 
-    # Resolve which heartbeat block to write into the new openclaw.json:
-    #   - --persona NAME  -> read fresh from $PERSONA_SRC_DIR/<NAME>/heartbeat.json
-    #   - otherwise       -> reuse the block we persisted at last install/reconfig
-    # Reading from state lets `reconfig` change only model/provider/key while
-    # leaving the persona's schedule intact, without needing to re-upload the
-    # persona tarball on every call.
-    local heartbeat_json=""
-    if [ -n "$OPENCLAW_PERSONA" ]; then
-        heartbeat_json=$(load_persona_heartbeat "$OPENCLAW_PERSONA")
-    else
-        heartbeat_json=$(load_state "heartbeat_json")
-    fi
+    # Persona cron jobs already live on the VM (~/.openclaw/cron/jobs.json)
+    # and survive gateway restarts, so a reconfig WITHOUT --persona doesn't
+    # need to touch them — we just rewrite openclaw.json, restart the
+    # gateway, and the existing cron schedule keeps firing. With --persona,
+    # apply_persona below re-runs apply_persona_cron_jobs to pick up any
+    # edits to the persona's cron.json.
 
     info "Reconfiguring OpenClaw (provider: ${PROVIDER}, model: ${MODEL})..."
     if [ -n "$OPENCLAW_PERSONA" ]; then
@@ -1143,7 +1228,7 @@ do_reconfig() {
     gw_token=$(load_state "gw_token")
     [ -n "$gw_token" ] || gw_token=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)
 
-    write_openclaw_config "$model_ref" "$gw_token" "$heartbeat_json"
+    write_openclaw_config "$model_ref" "$gw_token"
     write_openclaw_env "$api_key_env" "$API_KEY"
 
     # Persona workspace swap happens before we relight the gateway so the
