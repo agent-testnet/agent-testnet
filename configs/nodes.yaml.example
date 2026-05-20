@@ -8,7 +8,8 @@
 # Setup:
 #   1. Copy this file:  cp configs/nodes.yaml.example configs/nodes.yaml
 #   2. Fill in the address and secret for each node
-#   3. Deploy:          bash deploy/aws-deploy.sh deploy
+#   3. Deploy:          bash deploy/aws-deploy.sh deploy     (AWS)
+#                  or:  bash deploy/vultr-deploy.sh deploy   (Vultr)
 #
 # The deploy script patches DEPLOY_NODE_ADDRESS and DEPLOY_NODE_SECRET
 # placeholders at deploy time. For multi-node setups with different
@@ -16,7 +17,8 @@
 #
 # To add a node to a running deployment:
 #   1. Edit configs/nodes.yaml
-#   2. Run:  bash deploy/aws-deploy.sh reload
+#   2. Run:  bash deploy/aws-deploy.sh reload      (AWS)
+#       or:  bash deploy/vultr-deploy.sh reload    (Vultr)
 nodes:
   - name: "info"
     address: "DEPLOY_NODE_ADDRESS"

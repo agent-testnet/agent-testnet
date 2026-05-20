@@ -1,11 +1,16 @@
 # Personas
 
 Each subdirectory here is a self-contained OpenClaw persona that can be
-applied to an agent VM via:
+applied to an agent VM via either deploy script (`aws-deploy.sh` and
+`vultr-deploy.sh` share the OpenClaw subcommand surface via
+`deploy/lib/common.sh`):
 
 ```bash
-bash deploy/aws-deploy.sh openclaw install   --client N --persona NAME ...
-bash deploy/aws-deploy.sh openclaw reconfig  --client N --persona NAME --persona-confirm ...
+bash deploy/aws-deploy.sh   openclaw install  --client N --persona NAME ...
+bash deploy/vultr-deploy.sh openclaw install  --client N --persona NAME ...
+
+bash deploy/aws-deploy.sh   openclaw reconfig --client N --persona NAME --persona-confirm ...
+bash deploy/vultr-deploy.sh openclaw reconfig --client N --persona NAME --persona-confirm ...
 ```
 
 When applied, the persona's `*.md` files are uploaded to

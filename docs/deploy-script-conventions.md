@@ -2,6 +2,14 @@
 
 Reference for all testnet repos (`agent-testnet`, `testnet-forum`, `testnet-mail`, `testnet-search`, and future nodes). The canonical implementation lives in `agent-testnet/deploy/aws-deploy.sh`.
 
+> **Multi-cloud note.** `agent-testnet` also ships `deploy/vultr-deploy.sh`
+> using the same conventions. Cloud-agnostic logic (state file I/O,
+> multi-client mgmt, SSH wrappers, `ssh`/`logs`/`reload`/`restart`/
+> `redeploy`/`test`/`openclaw` verbs) is factored into
+> `deploy/lib/common.sh` and sourced by both scripts. New repos can
+> follow the AWS layout below, then optionally source the same
+> `lib/common.sh` if they want a Vultr counterpart later.
+
 ## 1. File Layout
 
 ```

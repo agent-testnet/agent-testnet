@@ -12,7 +12,7 @@ Knowing which one you want is half the battle.
 | Who sees the request? | A testnet **node** the operator deployed. | The **real upstream domain** on the public internet. |
 | TLS termination | The node, using a cert signed by the testnet CA. | End-to-end to the real upstream — the proxy is a dumb TCP forwarder. |
 | Resolves to | Operator-allocated VIP in `83.150.0.0` .. `83.150.254.255`. | Per-VM passthrough IP — public-looking (`83.150.255.x`) or private (`172.16.<vmIndex>.x`). |
-| Lifecycle | Edit `nodes.yaml`, `bash deploy/aws-deploy.sh reload`. Affects all clients. | `testnet-client agent proxy add/remove`. Per-agent-VM, per client. |
+| Lifecycle | Edit `nodes.yaml`, `bash deploy/aws-deploy.sh reload` (or `vultr-deploy.sh reload`). Affects all clients. | `testnet-client agent proxy add/remove`. Per-agent-VM, per client. |
 | Use it for | Faking sites the agent should think are real (Google, Reddit, GitHub) — content is operator-controlled. | Letting the agent reach a real third-party API (LLM provider, package registries) the operator can't host inside the testnet. |
 
 If you're operating the testnet, you almost certainly want server-side
@@ -61,7 +61,7 @@ nodes:
       - www.google.com
 ```
 
-After `bash deploy/aws-deploy.sh reload`, every client's agent VMs see
+After `bash deploy/aws-deploy.sh reload` (or `vultr-deploy.sh reload`), every client's agent VMs see
 `google.com` resolve to `83.150.x.y` and any HTTPS to it lands on the
 operator's `search` node.
 

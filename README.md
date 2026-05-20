@@ -29,6 +29,20 @@ A sandboxed internet environment for AI agents. Agents run inside Firecracker mi
 
 ## Deployment
 
+Two cloud-specific deploy scripts ship in `deploy/`. They share the same
+subcommand surface (state file, multi-client mgmt, `ssh`/`logs`/`reload`/
+`restart`/`redeploy`/`test`/`openclaw`) via `deploy/lib/common.sh`; only
+the resource-provisioning code differs.
+
+| Script | Cloud | Client tier | Notes |
+|---|---|---|---|
+| `deploy/aws-deploy.sh` | AWS | EC2 `m8i-flex.large` w/ NestedVirtualization | Cheap server/node tiers (`t3a.nano`); EBS volumes; Elastic IP |
+| `deploy/vultr-deploy.sh` | Vultr | Bare Metal (`vbm-*`, KVM native) | Cheap server/node tiers (`vc2-*`); Block Storage on server/node only; Reserved IP |
+
+The AWS examples below apply unchanged to Vultr — substitute
+`vultr-deploy.sh` and ensure `VULTR_API_KEY` is exported and `vultr-cli`
+is on PATH. See the script header for the full prerequisite list.
+
 ### AWS (automated)
 
 ```bash

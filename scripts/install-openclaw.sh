@@ -104,8 +104,9 @@ OPENCLAW_VERSION="${OPENCLAW_VERSION:-$OPENCLAW_DEFAULT_VERSION}"
 
 # Persona overlay (optional). $OPENCLAW_PERSONA is the persona subdir name
 # under $PERSONA_SRC_DIR (e.g. "lobby"). $PERSONA_SRC_DIR points at where
-# the persona tarball is unpacked locally on this host; deploy/aws-deploy.sh
-# uploads it to /tmp/personas/<NAME> by default. The confirm flag/env var
+# the persona tarball is unpacked locally on this host; the deploy
+# wrapper (deploy/aws-deploy.sh or deploy/vultr-deploy.sh) uploads it
+# to /tmp/personas/<NAME> by default. The confirm flag/env var
 # is required for non-interactive `reconfig --persona` runs because that
 # path overwrites IDENTITY/SOUL/AGENTS/USER/HEARTBEAT.md in the agent VM.
 OPENCLAW_PERSONA="${OPENCLAW_PERSONA:-}"
@@ -1018,14 +1019,19 @@ CRCONF
     echo ""
 
     if [ "${DEPLOY_MODE:-}" = "1" ]; then
+        # DEPLOY_SCRIPT is set by the deploy wrapper (aws-deploy.sh or
+        # vultr-deploy.sh) so the post-install hint points at whichever
+        # one the user actually ran. Defaults to aws-deploy.sh to keep
+        # older deploy scripts that don't export it working.
+        local deploy_script="${DEPLOY_SCRIPT:-aws-deploy.sh}"
         echo "  Talk to OpenClaw:"
-        echo "    bash deploy/aws-deploy.sh openclaw chat"
+        echo "    bash deploy/${deploy_script} openclaw chat"
         echo ""
         echo "  Check status:"
-        echo "    bash deploy/aws-deploy.sh openclaw status"
+        echo "    bash deploy/${deploy_script} openclaw status"
         echo ""
         echo "  Stop everything:"
-        echo "    bash deploy/aws-deploy.sh openclaw stop"
+        echo "    bash deploy/${deploy_script} openclaw stop"
     else
         echo "  Talk to OpenClaw:"
         echo "    sudo bash scripts/install-openclaw.sh chat"
